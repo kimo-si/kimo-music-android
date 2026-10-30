@@ -1,0 +1,11 @@
+{
+  "name": "kimo-core-runtime",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "dependencies": {
+    "express": "^5.3.0",
+    "kugoumusicapi": "github:MakcRe/KuGouMusicApi#514f870",
+    "websocket-express": "^4.1.0"
+  }
+}

@@ -1,0 +1,9 @@
+<resources>
+    <style name="Theme.Kimo" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowBackground">#F5F1E8</item>
+        <item name="android:colorAccent">#D95E26</item>
+    </style>
+</resources>

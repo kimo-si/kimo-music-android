@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <!-- 部分酷狗音频与封面 CDN 仍返回 HTTP；登录与接口协议保持 HTTPS。 -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">kugou.com</domain>
+        <domain includeSubdomains="true">kugoucdn.com</domain>
+        <domain includeSubdomains="true">kgimg.com</domain>
+    </domain-config>
+</network-security-config>
