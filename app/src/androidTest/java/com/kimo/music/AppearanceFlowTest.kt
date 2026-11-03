@@ -94,7 +94,7 @@ class AppearanceFlowTest {
                 UiModeManager.MODE_NIGHT_YES -> "yes"
                 UiModeManager.MODE_NIGHT_NO -> "no"
                 else -> "auto"
-            })
+            }, awaitUi = false)
         }
     }
 
@@ -118,12 +118,13 @@ class AppearanceFlowTest {
     }
 
     // 仅对独立模拟器变更系统夜间模式，读取命令结果以等待配置提交。
-    private fun setNightMode(mode: String) {
+    private fun setNightMode(mode: String, awaitUi: Boolean = true) {
         val automation = InstrumentationRegistry.getInstrumentation().uiAutomation
         automation.executeShellCommand("cmd uimode night $mode").use { descriptor ->
             android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { it.readBytes() }
         }
-        compose.waitForIdle()
+        // 清理阶段随即销毁 Activity，不等待配置重建后的下一帧，避免系统自动模式阻塞测试宿主。
+        if (awaitUi) compose.waitForIdle()
     }
 
     // 保留实际设备截图用于检查主题、文字对比度和布局。

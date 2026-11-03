@@ -1,0 +1,10 @@
+<resources>
+    <string name="widget_pause">暂停</string>
+    <string name="widget_play">播放</string>
+    <string name="app_name">Kimo</string>
+    <string name="widget_empty">选择一首喜欢的音乐</string>
+    <string name="widget_empty_time">00:00 / 00:00</string>
+    <string name="widget_previous">上一首</string>
+    <string name="widget_toggle">播放或暂停</string>
+    <string name="widget_next">下一首</string>
+</resources>

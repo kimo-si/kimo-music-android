@@ -13,6 +13,7 @@ object TrackStorage {
         put("cloudDrive", track.cloudDrive)
         put("favoriteAddedAtMs", track.favoriteAddedAtMs)
         put("metadataVerified", track.metadataVerified)
+        put("folderName", track.folderName)
     }
 
     // 兼容早期本地库记录，在线曲目始终保留 hash、mixsongid 与云端 fileid。
@@ -24,6 +25,7 @@ object TrackStorage {
             albumId = value.optLong("albumId"), mixSongId = value.optLong("mixSongId"),
             coverUrl = value.optString("coverUrl").takeIf { it.isNotBlank() && it != "null" },
             cloudFileId = value.optLong("cloudFileId"), cloudDrive = value.optBoolean("cloudDrive"),
-            favoriteAddedAtMs = value.optLong("favoriteAddedAtMs"), metadataVerified = value.optBoolean("metadataVerified", false))
+            favoriteAddedAtMs = value.optLong("favoriteAddedAtMs"), metadataVerified = value.optBoolean("metadataVerified", false),
+            folderName = value.optString("folderName"))
     }
 }

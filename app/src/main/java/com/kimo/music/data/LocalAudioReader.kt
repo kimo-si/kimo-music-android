@@ -5,6 +5,7 @@ import android.content.Intent
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.provider.DocumentsContract
 import android.util.AtomicFile
 import java.io.File
 import java.security.MessageDigest
@@ -44,7 +45,17 @@ class LocalAudioReader(private val context: Context) {
         mediaUri = uri.toString(), durationMs = reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
             ?.toLongOrNull() ?: 0, fileName = name, local = true,
         coverUrl = runCatching { cacheArtwork(reader.embeddedPicture) }.getOrNull(),
+        folderName = folderName(uri),
     )
+
+    // 只对提供方明确暴露的目录信息分组，不把不透明的内容 ID 冒充真实路径。
+    private fun folderName(uri: Uri): String = runCatching {
+        if (uri.scheme == "file") return File(uri.path.orEmpty()).parentFile?.name ?: "其他位置"
+        if (!DocumentsContract.isDocumentUri(context, uri)) return "其他位置"
+        val id = DocumentsContract.getDocumentId(uri)
+        if ('/' !in id) return "其他位置"
+        id.substringBeforeLast('/').substringAfter(':').ifBlank { "其他位置" }
+    }.getOrDefault("其他位置")
 
     // 保存音频自身携带的专辑图，按内容摘要去重，原子写入避免残缺图片。
     private fun cacheArtwork(bytes: ByteArray?): String? {

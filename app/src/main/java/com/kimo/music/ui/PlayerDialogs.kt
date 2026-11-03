@@ -44,29 +44,12 @@ import com.kimo.music.ui.theme.KimoColors
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun QueueSheet(model: MusicViewModel, onDismiss: () -> Unit) {
-    val content by remember(model) { derivedStateOf {
-        QueueContent(model.playback.queue, model.playback.track?.id, model.favorites)
-    } }
     val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val list = rememberLazyListState(initialFirstVisibleItemIndex = content.tracks.indexOfFirst { it.id == content.currentId }.coerceAtLeast(0))
     ModalBottomSheet(onDismiss, sheetState = sheet, containerColor = KimoColors.Paper) {
         KimoTipWindow()
-        Column(Modifier.padding(horizontal = 20.dp)) {
-            Text("播放列表 · ${content.tracks.size}", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(16.dp))
-            if (content.tracks.isEmpty()) Text("播放列表为空", color = KimoColors.Secondary)
-            LazyColumn(Modifier.testTag("queue-song-list").heightIn(max = 430.dp), state = list, contentPadding = PaddingValues(bottom = 24.dp)) {
-                items(content.tracks, key = Track::id, contentType = { "queue-song" }) { track ->
-                    TrackRow(track, { model.selectQueued(track); onDismiss() }, { model.toggleFavorite(track) },
-                        active = track.id == content.currentId, action = if (track.id in content.favorites)
-                            TrackRowAction.Unlike else TrackRowAction.Like)
-                }
-            }
-        }
+        EditableQueue(model, onDismiss)
     }
 }
-
-private data class QueueContent(val tracks: List<Track>, val currentId: String?, val favorites: Set<String>)
 
 data class PlayerMenuActions(val quality: () -> Unit, val playlist: () -> Unit,
     val lyrics: () -> Unit, val volume: () -> Unit, val download: () -> Unit, val timer: () -> Unit)
@@ -129,7 +112,9 @@ private fun CurrentMenuTrack(track: Track) {
 // 当前值与具体操作放在同一行，不改变原有音质、定时和队列逻辑。
 @Composable
 private fun PlayerOptionsList(model: MusicViewModel, actions: PlayerMenuActions) {
-    PlayerOption(Icons.Outlined.Download, "下载音频", onClick = actions.download)
+    PlayerOption(Icons.Outlined.Download, "下载音频", onClick = { model.playback.track?.let(model::download) })
+    PlayerOption(Icons.Outlined.SaveAlt, "另存为文件", onClick = actions.download)
+    PlayerOption(Icons.Outlined.Tune, "音效与桌面", onClick = { model.soundSettingsRequested = true })
     PlayerOption(Icons.AutoMirrored.Outlined.VolumeUp, "音量", "${(model.playback.volume * 100).toInt()}%", onClick = actions.volume)
     PlayerOption(Icons.Outlined.Equalizer, "音质", model.quality.title, onClick = actions.quality)
     PlayerOption(Icons.Outlined.Repeat, "播放模式", repeatLabel(model.playback.repeatMode), showChevron = false, onClick = model::cycleRepeat)

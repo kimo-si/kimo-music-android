@@ -136,7 +136,7 @@ fun LibraryScreen(model: MusicViewModel, actions: LibraryActions, active: Boolea
 // 账号区与收藏卡独立于当前栏目，随时可回到完整收藏列表。
 private fun LazyListScope.libraryHeaderItems(model: MusicViewModel, navigation: LibraryNavigation,
                                              actions: LibraryActions, favorites: List<Track>) {
-    item { LibraryHeader(actions.search) { navigation.overlay = LibraryOverlay.Settings } }
+    item { LibraryHeader(actions.search, { model.downloadsRequested = true }) { navigation.overlay = LibraryOverlay.Settings } }
     item { AccountSummary(model) }
     item { FavoritesCard(favorites, model.account.credentials == null || model.online.cloud.loaded, { navigation.tab = LibraryTab.Favorites }) {
         favorites.firstOrNull()?.let { actions.play(it, favorites) }
@@ -157,17 +157,18 @@ private fun LazyListScope.libraryContentItems(model: MusicViewModel, navigation:
 // 收藏集合包含完整云收藏及本机收藏，同一音频只在列表中显示一次。
 private fun LibraryTab.selectedTracks(model: MusicViewModel): List<Track> = when (this) {
     LibraryTab.Favorites -> model.favoriteTracks
-    LibraryTab.Local -> model.localTracks
+    LibraryTab.Local -> model.localTracks + model.downloadedTracks
     LibraryTab.Recent -> model.recentTracks
     else -> emptyList()
 }.distinctBy(Track::id)
 
 // 页面标题和右侧操作与参考图对齐，搜索与设置均有独立触控区域。
 @Composable
-private fun LibraryHeader(onSearch: () -> Unit, onSettings: () -> Unit) {
+private fun LibraryHeader(onSearch: () -> Unit, onDownloads: () -> Unit, onSettings: () -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text("我的音乐", Modifier.weight(1f), fontSize = 29.sp, lineHeight = 37.sp, fontWeight = FontWeight.Bold)
         ActionIcon("搜索音乐", Icons.Outlined.Search, onClick = onSearch)
+        ActionIcon("下载管理", Icons.Outlined.Downloading, onClick = onDownloads)
         ActionIcon("音乐设置", Icons.Outlined.Settings, onClick = onSettings)
     }
 }
@@ -297,7 +298,10 @@ private fun LibrarySectionHeader(navigation: LibraryNavigation, model: MusicView
 private fun LibrarySectionActions(navigation: LibraryNavigation, model: MusicViewModel,
                                   actions: LibraryActions, tracks: List<Track>) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        if (navigation.tab == LibraryTab.Local) OutlinedButton(actions.importAudio) { Text("导入本地音频") }
+        if (navigation.tab == LibraryTab.Local) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(actions.importAudio) { Text("导入本地音频") }
+            TextButton({ model.localLibraryRequested = true }) { Text("管理曲库") }
+        }
         if (navigation.tab == LibraryTab.Playlists) OutlinedButton({
             if (model.account.state.verified) navigation.overlay = LibraryOverlay.CreatePlaylist else model.loginRequested = true
         }) { Icon(Icons.Outlined.Add, null); Text("新建云歌单") }
@@ -397,6 +401,12 @@ private fun LibraryTrackSheet(track: Track, tab: LibraryTab, model: MusicViewMod
             }
             LibrarySheetAction("加入播放列表", { model.enqueue(track); onDismiss() }) {
                 Icon(Icons.Outlined.PlaylistAdd, null, Modifier.size(28.dp), tint = KimoColors.Ink)
+            }
+            LibrarySheetAction("下一首播放", { model.playNext(track); onDismiss() }) {
+                Icon(Icons.Outlined.SkipNext, null, Modifier.size(28.dp), tint = KimoColors.Ink)
+            }
+            if (track.online) LibrarySheetAction("下载音频", { model.download(track); onDismiss() }) {
+                Icon(Icons.Outlined.Download, null, Modifier.size(28.dp), tint = KimoColors.Ink)
             }
             LibrarySheetAction(if (liked) "取消喜欢" else "加入我喜欢", { model.toggleFavorite(track); onDismiss() }) {
                 LibraryFavoriteIcon(liked)

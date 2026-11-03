@@ -4,6 +4,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -12,6 +13,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AddCircleOutline
 import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.ChevronLeft
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -48,8 +50,30 @@ import com.kimo.music.ui.theme.KimoLayout
 import coil3.compose.AsyncImage
 import com.kimo.music.core.MembershipStatus
 import com.kimo.music.core.TrackMemberships
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 
 internal val LocalTrackMemberships = staticCompositionLocalOf<TrackMemberships?> { null }
+internal val LocalTrackActions = staticCompositionLocalOf<((Track) -> Unit)?> { null }
+
+// 独立管理页共用安全区域、主题、返回入口与全局提示宿主。
+@Composable
+internal fun KimoFullScreen(title: String, onBack: () -> Unit, actions: @Composable RowScope.() -> Unit = {},
+    content: @Composable ColumnScope.() -> Unit) {
+    Dialog(onBack, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        KimoTipWindow(); ThemedSheetNavigationBar(includeStatusBar = true)
+        Surface(Modifier.fillMaxSize(), color = KimoColors.Paper) {
+            Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).imePadding()) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    ActionIcon("返回$title", Icons.Outlined.ChevronLeft, onClick = onBack)
+                    Text(title, Modifier.weight(1f), fontSize = 26.sp, fontWeight = FontWeight.Bold)
+                    actions()
+                }
+                content()
+            }
+        }
+    }
+}
 
 enum class TrackRowAction(val label: String, val icon: ImageVector) {
     Enqueue("加入播放列表", Icons.Outlined.AddCircleOutline),
@@ -96,10 +120,14 @@ fun SectionHeading(title: String, onMore: (() -> Unit)? = null) {
 // 歌曲行将播放入口与加入队列入口分开，避免嵌套点击事件。
 @Composable
 fun TrackRow(track: Track, onPlay: () -> Unit, onAdd: () -> Unit,
-             modifier: Modifier = Modifier, active: Boolean = false, action: TrackRowAction = TrackRowAction.Enqueue) {
+             modifier: Modifier = Modifier, active: Boolean = false, action: TrackRowAction = TrackRowAction.Enqueue,
+             showAction: Boolean = true) {
     val selection = rememberSongSelection(track, onPlay)
+    val menu = LocalTrackActions.current
+    val click = if (menu == null) Modifier.clickable(onClick = selection.play)
+        else Modifier.combinedClickable(onClick = selection.play, onLongClick = { menu(track) })
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Row(Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).clickable(onClick = selection.play)
+        Row(Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).then(click)
             .padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
             TrackArtwork(track, Modifier.size(54.dp).onGloballyPositioned(selection.anchor::update))
             Column(Modifier.padding(start = 14.dp).weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -109,7 +137,7 @@ fun TrackRow(track: Track, onPlay: () -> Unit, onAdd: () -> Unit,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
-        ActionIcon("${action.label}：${track.title}", action.icon,
+        if (showAction) ActionIcon("${action.label}：${track.title}", action.icon,
             tint = if (action == TrackRowAction.Unlike) KimoColors.Orange else KimoColors.Ink, onClick = onAdd)
     }
 }

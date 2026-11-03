@@ -78,12 +78,14 @@ fun KimoApp(model: MusicViewModel) {
     BackHandler(!motion.visible && model.online.detail != null && navigation.overlay == null) { model.online.closeDetail() }
     BackHandler(navigation.overlay == Overlay.Search) { navigation.dismiss() }
     ConsumeMessages(model, snackbar)
-    CompositionLocalProvider(LocalSongFlight provides selection, LocalTrackMemberships provides model.online.memberships) {
+    CompositionLocalProvider(LocalSongFlight provides selection, LocalTrackMemberships provides model.online.memberships,
+        LocalTrackActions provides { track -> model.trackActionsRequested = track }) {
         // 完整播放页打开时停止向不可见的迷你封面发送落点反馈。
         SideEffect { selection.setEnabled(!motion.visible && navigation.overlay != Overlay.Search) }
         KimoTipProvider(snackbar) {
             AppSurface(model, navigation, onImport, motion)
             AppOverlay(navigation.overlay, model, navigation::dismiss, navigation::show, onExport)
+            FeatureOverlays(model)
             if (model.loginRequested) AccountDialog(model) { model.loginRequested = false }
         }
     }
@@ -166,7 +168,9 @@ private fun rememberAudioExporter(model: MusicViewModel): () -> Unit {
 private fun ConsumeMessages(model: MusicViewModel, snackbar: SnackbarHostState) {
     LaunchedEffect(model.message) {
         val message = model.message ?: return@LaunchedEffect
-        snackbar.showSnackbar(message, withDismissAction = true)
+        val action = model.noticeAction
+        val result = snackbar.showSnackbar(message, actionLabel = action?.title, withDismissAction = true)
+        if (result == SnackbarResult.ActionPerformed && action != null) model.handleNotice(action)
         model.clearMessage()
     }
 }

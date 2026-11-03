@@ -25,10 +25,14 @@ import com.kimo.music.data.FavoriteIndex
 import com.kimo.music.data.AudioCredits
 import com.kimo.music.data.LibraryStore
 import com.kimo.music.data.AppearanceMode
+import com.kimo.music.data.ListeningPreferences
 import com.kimo.music.data.LocalAudioReader
 import com.kimo.music.data.Track
 import com.kimo.music.data.online
 import com.kimo.music.core.*
+import com.kimo.music.downloads.AudioDownloadService
+import com.kimo.music.downloads.DownloadRepository
+import com.kimo.music.downloads.DownloadStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -37,6 +41,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.net.URL
 import kotlin.coroutines.CoroutineContext
 
@@ -56,9 +62,23 @@ data class PlaybackState(
 private data class ImportResult(val tracks: List<Track>, val failed: Int)
 private data class PlaybackRequest(val track: Track, val collection: List<Track>, val quality: AudioQuality)
 private data class PreparedQueue(val tracks: List<Track>, val items: List<MediaItem>, val startIndex: Int)
+enum class NoticeAction(val title: String) { Retry("重试"), Login("去登录"), Downloads("查看下载") }
 
 class MusicViewModel(application: Application) : AndroidViewModel(application) {
     private val store = LibraryStore(application)
+    private val localLibraryLock = Mutex()
+    val listening = ListeningPreferences(application)
+    val downloads = DownloadRepository.get(application)
+    val updates = ReleaseUpdates(application, viewModelScope)
+    var downloadedTracks by mutableStateOf<List<Track>>(emptyList()); private set
+    var downloadsRequested by mutableStateOf(false)
+    var localLibraryRequested by mutableStateOf(false)
+    var soundSettingsRequested by mutableStateOf(false)
+    var aboutRequested by mutableStateOf(false)
+    var notificationPromptRequested by mutableStateOf(false)
+    var trackActionsRequested by mutableStateOf<Track?>(null)
+    var equalizer by mutableStateOf(EqualizerStatus()); private set
+    private var equalizerSource: String? = null
     private var controller: MediaController? = null
     private val connection = MediaController.Builder(application,
         SessionToken(application, ComponentName(application, PlaybackService::class.java))).buildAsync()
@@ -76,10 +96,14 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     var recentIds by mutableStateOf(store.recentIds); private set
     var searchHistory by mutableStateOf(store.searchHistory); private set
     private var searchHistoryWrite: Job? = null
-    var message by mutableStateOf<String?>(null); private set
+    private var messageValue by mutableStateOf<String?>(null)
+    var noticeAction by mutableStateOf<NoticeAction?>(null); private set
+    var message: String?
+        get() = messageValue
+        private set(value) { messageValue = value; noticeAction = null }
     val account = AccountModel(application, viewModelScope)
     val online = OnlineLibrary(account, viewModelScope, CloudCache(application))
-    var quality by mutableStateOf(AudioQuality.Standard); private set
+    var quality by mutableStateOf(listening.options.quality); private set
     var appearance by mutableStateOf(store.appearance); private set
     var loginRequested by mutableStateOf(false)
     var lyrics by mutableStateOf<List<LyricLine>>(emptyList()); private set
@@ -89,11 +113,11 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     private var lyricsJob: Job? = null
     private var artworkTrackId: String? = null
     private var artworkJob: Job? = null
-    val tracks: List<Track> by derivedStateOf { (localTracks + online.knownTracks + sessionTracks).distinctBy(Track::id) }
+    val tracks: List<Track> by derivedStateOf { (localTracks + downloadedTracks + online.knownTracks + sessionTracks).distinctBy(Track::id) }
     private val trackIndex by derivedStateOf { tracks.associateBy(Track::id) }
     // 全量同步完成后统一按收藏时间倒序，个人页主卡与播放全部共享同一顺序。
     val favoriteTracks: List<Track> by derivedStateOf { FavoriteOrdering.newestFirst(online.favoriteTracks,
-        localTracks.filter { it.id in localFavorites }, localFavoriteMarks) }
+        (localTracks + downloadedTracks).distinctBy(Track::id).filter { it.id in localFavorites }, localFavoriteMarks) }
     val favorites: Set<String> by derivedStateOf {
         val index = FavoriteIndex(online.favoriteTracks)
         localFavorites + tracks.filter(index::contains).map(Track::id)
@@ -137,6 +161,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                 ?: if (onlineTrack) SERVER_ERROR_MESSAGE else "这首音频无法播放，请检查文件是否仍可读取"
             if (apiError?.expired == true) { account.sessionFailed(apiError.userMessage()); loginRequested = true }
             if (vipLoginRequired || (onlineTrack && account.credentials == null)) loginRequested = true
+            noticeAction = if (vipLoginRequired || apiError?.expired == true) NoticeAction.Login else NoticeAction.Retry
             snapshot()
         }
     }
@@ -147,6 +172,10 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         online.register(store.onlineTracks())
         connect()
         observePosition()
+        // 下载完成后即时合入本地曲库，离线播放无需重新导入文件。
+        viewModelScope.launch { downloads.items.collect { rows ->
+            downloadedTracks = rows.filter { it.status == DownloadStatus.Complete }.map(downloads::localTrack)
+        } }
         // 旧缓存中的固定占位先隐藏，再从用户文件核对真实标签。
         verifyLegacyLocalMetadata()
     }
@@ -165,10 +194,10 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // 核对完成时只更新仍待确认的条目，避免覆盖过程中发生的其他修改。
-    private fun applyVerifiedCredits(id: String, credits: AudioCredits) {
-        localTracks = localTracks.map { track ->
+    private suspend fun applyVerifiedCredits(id: String, credits: AudioCredits) {
+        localLibraryLock.withLock { localTracks = localTracks.map { track ->
             if (track.id == id && track.needsMetadataVerification) track.withVerifiedCredits(credits) else track
-        }
+        } }
     }
 
     // 仅在模型存活时刷新进度，所有播放器访问都在主线程执行。
@@ -181,12 +210,13 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     // 读取媒体会话的真实时长与状态，未知时长回退到已解析的曲目元数据。
     private fun snapshot() {
         val player = controller ?: return
-        val current = trackIndex[player.currentMediaItem?.mediaId]
+        val current = trackIndex[player.currentMediaItem?.mediaId] ?: PlaybackItems.track(player.currentMediaItem)
         val queue = queueTracks(player)
         playback = PlaybackState(current, current != null && player.isPlaying, true, if (current != null) player.currentPosition.coerceAtLeast(0) else 0,
             player.duration.takeIf { current != null && it > 0 } ?: current?.durationMs ?: 0, queue,
-            player.shuffleModeEnabled, player.repeatMode, player.volume,
+            player.shuffleModeEnabled, player.repeatMode, listening.options.volume,
             (player.sessionExtras.getLong(PlaybackCommands.TIMER_DEADLINE) - SystemClock.elapsedRealtime()).coerceAtLeast(0))
+        updateEqualizer(player)
         // 只有真正开始播放时才写入历史，反复进出页面不会伪造记录。
         if (current == null) { clearCurrentTrack(); return }
         if (player.isPlaying && recordedId != current.id) record(current)
@@ -208,11 +238,20 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         if (!queueDirty && queueIndex === index) return playback.queue
         queueIndex = index
         queueDirty = false
-        return (0 until player.mediaItemCount).mapNotNull { index[player.getMediaItemAt(it).mediaId] }
+        return (0 until player.mediaItemCount).mapNotNull { index[player.getMediaItemAt(it).mediaId]
+            ?: PlaybackItems.track(player.getMediaItemAt(it)) }
+    }
+
+    // 音效状态仅在服务的能力快照变化时解析，进度刷新复用同一对象。
+    private fun updateEqualizer(player: MediaController) {
+        val source = player.sessionExtras.getString(EqualizerStatusCodec.SESSION_KEY)
+        if (source == equalizerSource) return
+        equalizerSource = source; equalizer = EqualizerStatusCodec.decode(source)
     }
 
     // 播放一个强类型歌曲集合，防止空队列与无效起始索引。
     fun play(track: Track, collection: List<Track> = tracks) {
+        clearMessage()
         val request = PlaybackRequest(track, collection, quality)
         // 取消过期的准备任务，快速点歌只提交最后一次请求。
         cancelPendingSelection()
@@ -286,7 +325,9 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         cancelPendingSelection()
         val delta = if (forward) 1 else -1
         val index = (player.currentMediaItemIndex + delta + player.mediaItemCount) % player.mediaItemCount
+        val failed = player.playerError != null
         player.seekTo(index, 0)
+        if (failed) { player.prepare(); player.play() }
     }
 
     // 根据当前有效时长约束跳转位置。
@@ -311,7 +352,8 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     // 将有限的音量值传给会话，避免异常浮点输入。
     fun setVolume(volume: Float) {
-        if (volume.isFinite()) controller?.volume = volume.coerceIn(0f, 1f)
+        if (volume.isFinite()) listening.update(listening.options.copy(volume = volume.coerceIn(0f, 1f)))
+        snapshot()
     }
 
     // 收藏只保存歌曲标识，所有页面即时共享同一集合。
@@ -343,6 +385,44 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         message = "已加入播放列表"
     }
 
+    // 已在队列中的歌曲移动到下一首，新歌曲只插入一次。
+    fun playNext(track: Track) {
+        val player = controller ?: return
+        if (player.mediaItemCount == 0) { play(track, listOf(track)); return }
+        if (player.currentMediaItem?.mediaId == track.id) { notice("这首歌正在播放"); return }
+        cancelPendingSelection()
+        val existing = (0 until player.mediaItemCount).firstOrNull { player.getMediaItemAt(it).mediaId == track.id }
+        val target = (player.currentMediaItemIndex + 1 - if (existing != null && existing < player.currentMediaItemIndex) 1 else 0)
+        sessionTracks = (sessionTracks + track).distinctBy(Track::id); queueDirty = true
+        if (existing == null) player.addMediaItem(target.coerceAtMost(player.mediaItemCount), mediaItem(track))
+        else player.moveMediaItem(existing, target.coerceIn(0, player.mediaItemCount - 1))
+        notice("已设为下一首播放")
+    }
+
+    // 通过稳定歌曲标识移动队列，拖动与无障碍操作共用真实媒体会话。
+    fun moveQueued(sourceId: String, targetId: String) {
+        val player = controller ?: return
+        val source = playback.queue.indexOfFirst { it.id == sourceId }
+        val target = playback.queue.indexOfFirst { it.id == targetId }
+        if (source < 0 || target < 0 || source == target) return
+        queueDirty = true; player.moveMediaItem(source, target); snapshot()
+    }
+
+    // 移除当前曲目时由 Media3 连续选择后继项，不修改云歌单或原文件。
+    fun removeQueued(trackId: String) {
+        val player = controller ?: return
+        val index = playback.queue.indexOfFirst { it.id == trackId }
+        if (index < 0) return
+        cancelPendingSelection(); queueDirty = true; player.removeMediaItem(index); snapshot()
+    }
+
+    // 清空只作用于临时播放队列，同时取消尚未提交的选曲准备任务。
+    fun clearQueue() {
+        cancelPendingSelection(); queueDirty = true
+        controller?.run { pause(); stop(); clearMediaItems() }
+        snapshot()
+    }
+
     // 保留现有队列，从所选歌曲继续播放。
     fun selectQueued(track: Track) {
         val index = playback.queue.indexOfFirst { it.id == track.id }
@@ -364,9 +444,8 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         if (uris.isEmpty()) return
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) { readAudio(uris) }
-            val merged = (localTracks + result.tracks).distinctBy(Track::id)
-            withContext(Dispatchers.IO) { store.saveLocalTracks(merged) }
-            localTracks = merged
+            // 串行提交曲库变更，导入与移除同时进行也不会相互覆盖。
+            mutateLocalTracks { (it + result.tracks).distinctBy(Track::id) }
             message = if (result.failed == 0) "已导入 ${result.tracks.size} 首音乐"
                 else "已导入 ${result.tracks.size} 首，${result.failed} 个文件无法读取"
         }
@@ -407,6 +486,66 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     // 云端操作统一通过播放器已有提示通道反馈。
     fun notice(text: String) { message = text }
 
+    // 提示操作使用明确枚举分发，不把界面回调或账号信息保存在消息中。
+    fun handleNotice(action: NoticeAction) {
+        when (action) {
+            NoticeAction.Login -> loginRequested = true
+            NoticeAction.Downloads -> downloadsRequested = true
+            NoticeAction.Retry -> controller?.run { prepare(); play() }
+        }
+    }
+
+    // 下载只对在线资源创建任务，本地文件仍可通过原有另存为入口导出。
+    fun download(track: Track) {
+        if (!track.online) { notice("这首歌已在本地，可以使用另存为"); return }
+        runCatching { AudioDownloadService.enqueue(getApplication(), track, quality) }
+            .onSuccess {
+                notificationPromptRequested = true
+                notice("已加入下载队列"); noticeAction = NoticeAction.Downloads
+            }.onFailure { notice("暂时无法启动下载，请保持应用在前台后重试") }
+    }
+
+    // 管理页命令由同一个前台服务接受，启动受系统限制时给出可理解反馈。
+    fun downloadCommand(id: String, action: String) {
+        runCatching { AudioDownloadService.command(getApplication(), id, action) }
+            .onFailure { notice("暂时无法管理下载，请保持应用在前台后重试") }
+    }
+
+    // 失效扫描在线程池中完成，不阻塞搜索或批量选择界面。
+    suspend fun unreadableLocalTracks(): List<Track> {
+        val imported = localTracks
+        return withContext(Dispatchers.IO) { imported.filter { track ->
+            runCatching {
+                requireNotNull(getApplication<Application>().contentResolver.openAssetFileDescriptor(track.mediaUri.toUri(), "r")).use {
+                    check(it.length != 0L)
+                }
+            }.isFailure
+        } }
+    }
+
+    // 批量收藏本地歌曲一次提交，避免逐首更新导致大量偏好写入。
+    fun favoriteLocal(ids: Set<String>) {
+        localFavorites = localFavorites + ids
+        store.saveFavorites(localFavorites); localFavoriteMarks = store.favoriteMarks()
+        notice("已收藏 ${ids.size} 首本地音乐")
+    }
+
+    // 从导入曲库移除记录，不删除设备中的原始文件或已下载音频。
+    fun removeLocal(ids: Set<String>) {
+        viewModelScope.launch {
+            // 基于取得锁后的最新曲库计算移除结果。
+            mutateLocalTracks { tracks -> tracks.filterNot { it.id in ids } }
+            notice("已移除 ${ids.size} 条曲库记录，原文件已保留")
+        }
+    }
+
+    // 曲库的读取、变换和持久化作为同一次串行操作执行。
+    private suspend fun mutateLocalTracks(transform: (List<Track>) -> List<Track>) = localLibraryLock.withLock {
+        val next = transform(localTracks)
+        withContext(Dispatchers.IO) { store.saveLocalTracks(next) }
+        localTracks = next
+    }
+
     // 实际提交搜索后才写入最近搜索，重复词移到最前，不影响账号收藏。
     fun rememberSearch(keyword: String) {
         val normalized = keyword.trim().takeIf(String::isNotEmpty) ?: return
@@ -441,6 +580,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     // 音质变化只替换当前媒体项，保留整条播放队列和进度。
     fun changeQuality(selected: AudioQuality) {
         quality = selected
+        listening.update(listening.options.copy(quality = selected))
         pendingSelection?.let { request -> play(request.track, request.collection); return }
         val player = controller ?: return
         val track = playback.track?.takeIf(Track::online) ?: return
@@ -481,9 +621,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
                 } else account.api.artwork(track)
                 if (cover == null) return@launch
                 if (track.local) {
-                    localTracks = localTracks.map { if (it.id == track.id) it.copy(coverUrl = cover) else it }
-                    val updated = localTracks
-                    withContext(Dispatchers.IO) { store.saveLocalTracks(updated) }
+                    mutateLocalTracks { tracks -> tracks.map { if (it.id == track.id) it.copy(coverUrl = cover) else it } }
                 } else online.updateArtwork(track, cover)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { /* 图片不可用时保留中性占位，不影响音频播放。 */ }
@@ -499,22 +637,13 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
 
     // 释放界面控制器连接，后台媒体服务仍按实际播放状态管理生命周期。
     override fun onCleared() {
+        listening.close()
         MediaController.releaseFuture(connection)
         super.onCleared()
     }
 
     // 系统媒体通知只使用当前歌曲的真实元数据和封面。
-    private fun mediaItem(track: Track, selectedQuality: AudioQuality = quality): MediaItem = MediaItem.Builder().setMediaId(track.id)
-        .setUri(if (track.online) KugouDataSource.uri(track, selectedQuality) else track.mediaUri.toUri())
-        .setMediaMetadata(MediaMetadata.Builder().setTitle(track.title)
-            .setArtist(track.displayArtist).setAlbumTitle(track.displayAlbum)
-            .setArtworkUri(artworkUri(track))
-            .build()).build()
-
-    // 缺少真实封面的在线或本地歌曲不向系统通知提供其他歌曲的图片。
-    private fun artworkUri(track: Track): Uri? {
-        return track.coverUrl?.toUri()
-    }
+    private fun mediaItem(track: Track, selectedQuality: AudioQuality = quality): MediaItem = PlaybackItems.create(track, selectedQuality)
 
     private companion object {
         const val POSITION_INTERVAL_MS = 400L

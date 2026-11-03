@@ -100,8 +100,12 @@ private fun KimoTip(data: SnackbarData) {
                 contentAlignment = Alignment.Center) {
                 Icon(Icons.Outlined.Info, null, Modifier.size(19.dp), tint = KimoColors.Orange)
             }
-            Text(data.visuals.message, Modifier.weight(1f), fontSize = 14.sp, lineHeight = 21.sp,
-                fontWeight = FontWeight.Medium)
+            Column(Modifier.weight(1f)) {
+                Text(data.visuals.message, fontSize = 14.sp, lineHeight = 21.sp, fontWeight = FontWeight.Medium)
+                data.visuals.actionLabel?.let { label ->
+                    TextButton(data::performAction, contentPadding = PaddingValues(0.dp)) { Text(label, color = KimoColors.Orange) }
+                }
+            }
             IconButton(data::dismiss, Modifier.size(48.dp)) {
                 Icon(Icons.Outlined.Close, "关闭提示", Modifier.size(17.dp), tint = KimoColors.Secondary)
             }

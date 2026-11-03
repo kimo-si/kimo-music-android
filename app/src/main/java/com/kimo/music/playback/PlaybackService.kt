@@ -16,6 +16,8 @@ import androidx.media3.session.SessionResult
 import androidx.media3.session.SessionError
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.MoreExecutors
+import com.kimo.music.widget.MusicWidgetState
 
 data class SleepTimerRequest(val durationMs: Long)
 
@@ -31,8 +33,19 @@ object PlaybackCommands {
 class PlaybackService : MediaSessionService() {
     private var session: MediaSession? = null
     private var sleepTimer: PlaybackSleepTimer? = null
+    private var persistence: PlaybackPersistence? = null
+    private var audioEffects: AudioEffectsController? = null
+    private var desktopLyrics: DesktopLyricsController? = null
 
     private val commands = object : MediaSession.Callback {
+        // 系统或蓝牙请求恢复时返回上次队列，读取由串行存储线程完成。
+        @androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
+        override fun onPlaybackResumption(session: MediaSession, controller: MediaSession.ControllerInfo,
+            isForPlayback: Boolean): ListenableFuture<MediaSession.MediaItemsWithStartPosition> =
+            Futures.transform(PlaybackCheckpointStore.read(this@PlaybackService), { value ->
+                MediaSession.MediaItemsWithStartPosition(value?.items.orEmpty(), value?.index ?: 0, value?.positionMs ?: 0)
+            }, MoreExecutors.directExecutor())
+
         // 自定义定时命令只授权给本应用，系统媒体控制仍使用默认能力。
         @androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
         override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
@@ -71,8 +84,18 @@ class PlaybackService : MediaSessionService() {
         session = MediaSession.Builder(this, player).setCallback(commands).build()
         // 定时器属于媒体服务，Activity 关闭后仍能停止实际音频。
         sleepTimer = PlaybackSleepTimer(player) { deadline ->
-            session?.setSessionExtras(Bundle().apply { putLong(PlaybackCommands.TIMER_DEADLINE, deadline) })
+            session?.let { it.setSessionExtras(Bundle(it.sessionExtras).apply { putLong(PlaybackCommands.TIMER_DEADLINE, deadline) }) }
         }
+        // 恢复只建立暂停队列，新的主动点歌优先于尚未完成的恢复请求。
+        persistence = PlaybackPersistence(this, player) { MusicWidgetState.update(this, player) }
+        // 音效绑定真实音频会话，能力和参数通过媒体会话反馈给界面。
+        audioEffects = AudioEffectsController(this, player) { status ->
+            session?.let { it.setSessionExtras(Bundle(it.sessionExtras).apply {
+                putString(EqualizerStatusCodec.SESSION_KEY, EqualizerStatusCodec.encode(status))
+            }) }
+        }
+        // 桌面歌词共用当前播放器与权限状态，不启动另一份音频服务。
+        desktopLyrics = DesktopLyricsController(this, player)
     }
 
     // 仅向本应用及受信任的系统媒体控制方提供会话。
@@ -84,9 +107,12 @@ class PlaybackService : MediaSessionService() {
 
     // 清理播放器与会话，避免服务销毁后继续占用音频资源。
     override fun onDestroy() {
+        persistence?.release(); persistence = null
+        audioEffects?.release(); audioEffects = null
+        desktopLyrics?.release(); desktopLyrics = null
         sleepTimer?.release()
         sleepTimer = null
-        session?.run { player.release(); release() }
+        session?.run { player.pause(); MusicWidgetState.update(this@PlaybackService, player); player.release(); release() }
         session = null
         super.onDestroy()
     }

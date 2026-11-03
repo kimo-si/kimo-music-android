@@ -17,6 +17,7 @@ data class Track(
     val cloudDrive: Boolean = false,
     val favoriteAddedAtMs: Long = 0,
     val metadataVerified: Boolean = true,
+    val folderName: String = "",
 ) {
     // 旧版本把缺失的本地标签写成固定文字，确认来源前不把它当成真实信息展示。
     val needsMetadataVerification: Boolean get() = local && !metadataVerified &&

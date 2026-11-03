@@ -79,7 +79,31 @@ private fun SettingsContent(model: MusicViewModel, onClose: () -> Unit, actions:
                 onClose(); actions.importAudio()
             }
         }
+        SettingsExtensions(model, onClose)
         Spacer(Modifier.height(12.dp))
+    }
+}
+
+// 新增功能入口沿用既有设置行，打开独立页面前关闭当前设置窗口。
+@Composable
+private fun SettingsExtensions(model: MusicViewModel, onClose: () -> Unit) {
+    SettingsGroup("播放与桌面") {
+        SettingsRow("音效与桌面", "均衡器、渐入渐出、桌面歌词与小组件", Icons.Outlined.Tune) {
+            onClose(); model.soundSettingsRequested = true
+        }
+    }
+    SettingsGroup("音乐管理") {
+        SettingsRow("下载管理", "下载进度、暂停重试和离线播放", Icons.Outlined.Download) {
+            onClose(); model.downloadsRequested = true
+        }
+        SettingsRow("本地曲库", "按歌手、专辑和文件夹整理音乐", Icons.Outlined.LibraryMusic) {
+            onClose(); model.localLibraryRequested = true
+        }
+    }
+    SettingsGroup("应用") {
+        SettingsRow("关于 Kimo", "版本信息、更新日志与检查更新", Icons.Outlined.Info, model.updates.installedVersion) {
+            onClose(); model.aboutRequested = true
+        }
     }
 }
 
