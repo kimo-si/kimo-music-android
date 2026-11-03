@@ -48,7 +48,7 @@ class OnlineUiTest {
     @Test fun favoriteLibraryKeepsActualTracksAndPlayback() {
         val model = openLibraryWithDemoFavorites()
         compose.onNodeWithText("我的音乐").assertIsDisplayed()
-        compose.onNodeWithContentDescription("查看我喜欢").assertIsDisplayed()
+        compose.onNodeWithContentDescription("我喜欢").assertIsDisplayed()
         saveImage("library", compose.onRoot())
         val initialCount = model.favoriteTracks.size
         compose.onNodeWithText("$initialCount 首").assertIsDisplayed()
@@ -56,7 +56,7 @@ class OnlineUiTest {
         compose.onNodeWithContentDescription("歌曲操作：晚风经过").performScrollTo().performClick()
         compose.onNodeWithText("取消喜欢").performClick()
         compose.runOnIdle { assertFalse("evening-wind" in model.favorites) }
-        compose.onNodeWithContentDescription("返回我的音乐").performClick()
+        compose.onNodeWithContentDescription("我喜欢").performClick()
         compose.onNodeWithText("${initialCount - 1} 首").assertIsDisplayed()
         compose.onNodeWithContentDescription("播放歌曲：山谷来信").performScrollTo().performClick()
         compose.onNodeWithText("正在播放").assertDoesNotExist()
@@ -90,9 +90,10 @@ class OnlineUiTest {
         compose.runOnIdle { assertNull(model.online.detail) }
         compose.onNodeWithContentDescription("本地音乐").performClick()
         compose.onNodeWithText("导入本地音频").assertIsDisplayed()
-        compose.onNodeWithContentDescription("返回我的音乐").performClick()
-        compose.onNode(hasScrollToIndexAction()).performScrollToKey("library-playlists")
+        compose.onNodeWithContentDescription("我喜欢").performClick()
         compose.onNodeWithContentDescription("我的歌单").performClick()
+        compose.onNodeWithText("登录后查看你的歌单").assertIsDisplayed()
+        compose.onNodeWithContentDescription("账号信息").performClick()
         compose.onNodeWithText("欢迎回来").assertIsDisplayed()
         compose.onNodeWithContentDescription("返回上一页").performClick()
         compose.onNodeWithContentDescription("搜索音乐").performClick()

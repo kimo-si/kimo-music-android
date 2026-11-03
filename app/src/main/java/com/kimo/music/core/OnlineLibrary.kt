@@ -93,6 +93,18 @@ class OnlineLibrary internal constructor(private val api: KugouApi, private val 
     // 离开详情取消旧分页，避免上个目录的响应覆盖新目录。
     fun closeDetail() { detail?.songs?.reset(); detail?.albums?.reset(); detail?.profile?.reset(); detail = null }
 
+    // 展开歌单拥有独立分页，切换账号后的迟到内容不得进入共享曲库。
+    fun playlistSongs(entry: CatalogEntry): PagedFeed<Track> {
+        val owner = currentOwner()
+        return PagedFeed(scope, Track::id) { page ->
+            if (owner == null || currentOwner() != owner) return@PagedFeed FeedPage(emptyList())
+            val result = api.tracks(entry, page)
+            if (currentOwner() != owner) return@PagedFeed FeedPage(emptyList())
+            register(result.tracks)
+            FeedPage(result.tracks, result.nextPage)
+        }
+    }
+
     // 首页刷新互不依赖，重登后推荐使用新账号重新请求。
     fun refreshHome() { playlists.load(true); recommendations.load(true) }
 

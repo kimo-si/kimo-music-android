@@ -169,7 +169,7 @@ private fun ConsumeMessages(model: MusicViewModel, snackbar: SnackbarHostState) 
     LaunchedEffect(model.message) {
         val message = model.message ?: return@LaunchedEffect
         val action = model.noticeAction
-        val result = snackbar.showSnackbar(message, actionLabel = action?.title, withDismissAction = true)
+        val result = snackbar.showSnackbar(message, actionLabel = action?.title, duration = SnackbarDuration.Indefinite)
         if (result == SnackbarResult.ActionPerformed && action != null) model.handleNotice(action)
         model.clearMessage()
     }

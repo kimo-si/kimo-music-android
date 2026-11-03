@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.os.SystemClock
 import androidx.activity.compose.setContent
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,8 +31,50 @@ class TipFlowTest {
     @get:Rule(order = 0) val library = LocalLibraryFixture()
     @get:Rule(order = 1) val compose = createAndroidComposeRule<MainActivity>()
 
-    // 同一条提示实时跟随主题，实际像素改变且手动关闭后释放浮层。
-    @Test fun tipFollowsThemeAndCanBeDismissed() {
+    // 含操作按钮的无限期消息也必须在三秒后消失，不受 Material 默认时长影响。
+    @Test fun actionableTipExpiresAtThreeSecondsWithoutManualDismiss() {
+        val snackbar = SnackbarHostState()
+        compose.mainClock.autoAdvance = false
+        try {
+            compose.runOnUiThread { compose.activity.setContent {
+                KimoTheme { KimoTipProvider(snackbar) {
+                    LaunchedEffect(Unit) { snackbar.showSnackbar("下载已完成", "查看下载", duration = SnackbarDuration.Indefinite) }
+                } }
+            } }
+            compose.mainClock.advanceTimeBy(64)
+            compose.onNodeWithText("查看下载").assertIsDisplayed()
+            compose.mainClock.advanceTimeBy(2_800)
+            compose.onNodeWithTag("global-tip").assertIsDisplayed()
+            compose.mainClock.advanceTimeBy(300)
+            compose.onNodeWithTag("global-tip").assertDoesNotExist()
+            compose.runOnIdle { assertEquals(null, snackbar.currentSnackbarData) }
+        } finally { compose.mainClock.autoAdvance = true }
+    }
+
+    // 新消息拥有独立三秒，旧消息的计时器不能提前关闭新结果。
+    @Test fun replacingTipStartsANewThreeSecondLifetime() {
+        val snackbar = SnackbarHostState()
+        val message = mutableStateOf("第一条结果")
+        compose.mainClock.autoAdvance = false
+        try {
+            compose.runOnUiThread { compose.activity.setContent {
+                KimoTheme { KimoTipProvider(snackbar) {
+                    LaunchedEffect(message.value) { snackbar.showSnackbar(message.value, duration = SnackbarDuration.Indefinite) }
+                } }
+            } }
+            compose.mainClock.advanceTimeBy(64)
+            compose.mainClock.advanceTimeBy(1_500)
+            compose.runOnIdle { message.value = "第二条结果" }
+            compose.mainClock.advanceTimeBy(64)
+            compose.mainClock.advanceTimeBy(1_700)
+            compose.onNodeWithText("第二条结果").assertIsDisplayed()
+            compose.mainClock.advanceTimeBy(1_400)
+            compose.onNodeWithTag("global-tip").assertDoesNotExist()
+        } finally { compose.mainClock.autoAdvance = true }
+    }
+
+    // 同一条提示实时跟随主题，实际像素改变且无需手动关闭便自动释放浮层。
+    @Test fun tipFollowsThemeAndDismissesAutomatically() {
         val model = currentModel()
         compose.runOnIdle { model.changeAppearance(AppearanceMode.Light); model.notice("已加入我喜欢") }
         assertSingleTip("已加入我喜欢")
@@ -41,8 +84,8 @@ class TipFlowTest {
         assertSingleTip("已加入我喜欢")
         assertTipSurface(Color(0xFF2C302B))
         saveScreen("tip-dark")
-        compose.onNodeWithContentDescription("关闭提示").performClick()
-        compose.onNodeWithTag("global-tip").assertDoesNotExist()
+        compose.onNodeWithContentDescription("关闭提示").assertDoesNotExist()
+        compose.waitUntil(4_000) { compose.onAllNodesWithTag("global-tip").fetchSemanticsNodes().isEmpty() }
         compose.runOnIdle { assertEquals(null, model.message) }
     }
 
@@ -96,7 +139,7 @@ class TipFlowTest {
                     val snackbar = remember { SnackbarHostState() }
                     KimoTipProvider(snackbar) {
                         if (open.value) PlaylistNameDialog("新建云歌单", { open.value = false }) { }
-                        LaunchedEffect(Unit) { snackbar.showSnackbar("歌单名称将在保存后同步", withDismissAction = true) }
+                        LaunchedEffect(Unit) { snackbar.showSnackbar("歌单名称将在保存后同步", duration = SnackbarDuration.Indefinite) }
                     }
                 }
             }
@@ -106,8 +149,8 @@ class TipFlowTest {
         compose.onNodeWithText("取消").performClick()
         compose.onNodeWithText("新建云歌单").assertDoesNotExist()
         assertSingleTip("歌单名称将在保存后同步")
-        compose.onNodeWithContentDescription("关闭提示").performClick()
-        compose.onNodeWithTag("global-tip").assertDoesNotExist()
+        compose.onNodeWithContentDescription("关闭提示").assertDoesNotExist()
+        compose.waitUntil(4_000) { compose.onAllNodesWithTag("global-tip").fetchSemanticsNodes().isEmpty() }
     }
 
     // 读取真实页面模型，提示与生产收藏、播放反馈使用同一入口。

@@ -2,11 +2,15 @@ package com.kimo.music.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.automirrored.outlined.PlaylistPlay
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -15,16 +19,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.lerp
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kimo.music.core.AccountState
+import com.kimo.music.core.CatalogEntry
 import com.kimo.music.ui.theme.KimoColors
 
 internal data class LibraryIdentity(val title: String, val subtitle: String, val action: String,
@@ -87,45 +92,49 @@ private fun LibraryIdentityButton(identity: LibraryIdentity, onAccount: () -> Un
     }
 }
 
-// 离线入口在登录前后都可操作，不把本地功能误放进账号授权流程。
+// 四个栏目共用一排等宽入口，账号登录前后保持顺序和触控区域一致。
 @Composable
-internal fun LibraryOfflineAccess(onLocal: () -> Unit, onDownloads: () -> Unit, onRecent: () -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("离线也能听", fontSize = 21.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold)
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            LibraryOfflineTile("本地音乐", "导入设备里的音乐", Icons.Outlined.Smartphone, Modifier.weight(1f), onLocal)
-            LibraryOfflineTile("已下载", "随时离线播放", Icons.Outlined.FileDownload, Modifier.weight(1f), onDownloads)
-        }
-        LibraryRecentAccess(onRecent)
+internal fun LibraryShortcuts(selected: LibraryTab, onSelect: (LibraryTab) -> Unit) {
+    Row(Modifier.fillMaxWidth().selectableGroup().padding(vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        LibraryTab.entries.forEach { tab -> LibraryShortcut(tab, tab == selected, Modifier.weight(1f)) { onSelect(tab) } }
     }
 }
 
-// 双列入口共用间距和图标规格，小屏或大字号时文案允许换行。
+// 爱心、歌单、手机和时钟分别表达四个栏目，选中态同时提供颜色和读屏语义。
 @Composable
-private fun LibraryOfflineTile(title: String, subtitle: String, icon: ImageVector, modifier: Modifier, onClick: () -> Unit) {
-    Row(modifier.clip(RoundedCornerShape(18.dp)).background(KimoColors.Surface)
-        .clickable(role = Role.Button, onClick = onClick).semantics(mergeDescendants = true) { contentDescription = title }
-        .heightIn(min = 72.dp).padding(horizontal = 13.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Icon(icon, null, Modifier.size(28.dp), tint = KimoColors.Orange)
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(title, fontSize = 15.sp, lineHeight = 21.sp, fontWeight = FontWeight.SemiBold)
-            Text(subtitle, fontSize = 11.sp, lineHeight = 16.sp, color = KimoColors.Secondary)
-        }
+private fun LibraryShortcut(tab: LibraryTab, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    val tint = if (selected) KimoColors.Orange else KimoColors.Secondary
+    val icon = when (tab) {
+        LibraryTab.Favorites -> Icons.Filled.Favorite
+        LibraryTab.Playlists -> Icons.AutoMirrored.Outlined.PlaylistPlay
+        LibraryTab.Local -> Icons.Outlined.Smartphone
+        LibraryTab.Recent -> Icons.Outlined.Schedule
+    }
+    Column(modifier.clip(RoundedCornerShape(15.dp)).selectable(selected, role = Role.Tab, onClick = onClick)
+        .semantics(mergeDescendants = true) { contentDescription = tab.shortcutTitle }.padding(vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(Modifier.size(46.dp).background(if (selected) tint.copy(alpha = 0.13f) else KimoColors.Surface, CircleShape),
+            contentAlignment = Alignment.Center) { Icon(icon, null, Modifier.size(25.dp), tint = tint) }
+        Text(tab.shortcutTitle, fontSize = 13.sp, lineHeight = 19.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) KimoColors.Ink else KimoColors.Secondary)
     }
 }
 
-// 最近播放保持单行入口，历史内容在独立列表中按真实播放记录展示。
+// 歌单封面行原位展开，标题、数量和展开状态都来自当前真实歌单。
 @Composable
-private fun LibraryRecentAccess(onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(15.dp)).background(KimoColors.Surface)
-        .clickable(role = Role.Button, onClick = onClick).semantics(mergeDescendants = true) { contentDescription = "最近播放" }
-        .heightIn(min = 46.dp).padding(horizontal = 14.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Icon(Icons.Outlined.Schedule, null, Modifier.size(23.dp), tint = KimoColors.Ink)
-        Text("最近播放", Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-        Text("查看全部", fontSize = 11.sp, color = KimoColors.Secondary)
-        Icon(Icons.Outlined.ChevronRight, null, Modifier.size(18.dp), tint = KimoColors.Secondary)
+internal fun LibraryPlaylistHeader(entry: CatalogEntry, expanded: Boolean, onToggle: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable(role = Role.Button, onClick = onToggle)
+        .semantics(mergeDescendants = true) {
+            contentDescription = "歌单：${entry.title}"
+            stateDescription = if (expanded) "已展开" else "已收起"
+        }.padding(vertical = 10.dp, horizontal = 2.dp), verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(13.dp)) {
+        CatalogArtwork(entry, Modifier.size(54.dp))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Text(entry.title, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text("${entry.count} 首歌曲", fontSize = 12.sp, color = KimoColors.Secondary)
+        }
+        Icon(if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, null, Modifier.size(24.dp), tint = KimoColors.Secondary)
     }
 }
 
@@ -143,25 +152,5 @@ internal fun LibraryCollectionEmpty(authenticated: Boolean, onDiscover: () -> Un
             Text("去发现音乐", fontSize = 14.sp)
             Icon(Icons.Outlined.ChevronRight, null, Modifier.size(19.dp))
         }
-    }
-}
-
-// 歌单入口在两种账号状态下占据同一位置，登录后展示真实云歌单数量。
-@Composable
-internal fun LibraryPlaylistAccess(authenticated: Boolean, count: Int?, onOpen: () -> Unit) {
-    Column {
-        HorizontalDivider(color = KimoColors.Rail.copy(alpha = 0.55f), thickness = 0.5.dp)
-        Row(Modifier.fillMaxWidth().clickable(role = Role.Button, onClick = onOpen)
-            .semantics(mergeDescendants = true) { contentDescription = "我的歌单" }
-            .padding(horizontal = 4.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Icon(Icons.AutoMirrored.Outlined.PlaylistPlay, null, Modifier.size(24.dp))
-            Text("我的歌单", Modifier.weight(1f), fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-            if (!authenticated) Icon(Icons.Outlined.Lock, null, Modifier.size(16.dp), tint = KimoColors.Secondary)
-            Text(if (!authenticated) "登录后查看" else count?.let { "$it 个歌单" } ?: "查看全部",
-                fontSize = 12.sp, color = KimoColors.Secondary)
-            Icon(Icons.Outlined.ChevronRight, null, Modifier.size(18.dp), tint = KimoColors.Secondary)
-        }
-        HorizontalDivider(color = KimoColors.Rail.copy(alpha = 0.55f), thickness = 0.5.dp)
     }
 }

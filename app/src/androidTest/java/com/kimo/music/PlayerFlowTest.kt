@@ -353,7 +353,7 @@ class EmptyPlayerFlowTest {
         compose.onNodeWithContentDescription("打开播放页").assertDoesNotExist()
         compose.onNodeWithText("晚风经过").assertDoesNotExist()
         compose.onNodeWithText("我的", useUnmergedTree = true).performClick()
-        compose.onNodeWithContentDescription("查看我喜欢").performClick()
+        compose.onNodeWithContentDescription("本地音乐").performClick()
         compose.onNodeWithContentDescription("查看当前播放队列").performClick()
         compose.onNodeWithText("播放列表 · 0").assertIsDisplayed()
         compose.onNodeWithText("播放列表为空").assertIsDisplayed()

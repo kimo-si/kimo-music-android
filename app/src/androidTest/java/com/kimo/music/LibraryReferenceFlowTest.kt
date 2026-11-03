@@ -31,7 +31,9 @@ class LibraryReferenceFlowTest {
     @Test fun guestOverviewMatchesReferenceAndOpensLogin() {
         val model = openLibrary(AppearanceMode.Dark)
         compose.onNodeWithText("登录，找回你的收藏").assertIsDisplayed()
-        compose.onNodeWithText("离线也能听").assertIsDisplayed()
+        compose.onNodeWithText("离线也能听").assertDoesNotExist()
+        compose.onNodeWithContentDescription("我喜欢").assertIsSelected()
+        compose.onNodeWithContentDescription("最近播放").assertIsDisplayed()
         compose.onNodeWithText("收藏，从一首歌开始").assertIsDisplayed()
         compose.onNodeWithText("播放全部").assertDoesNotExist()
         compose.onNodeWithContentDescription("音乐云盘").assertDoesNotExist()
@@ -47,14 +49,14 @@ class LibraryReferenceFlowTest {
         assertFalse(model.loginRequested)
     }
 
-    // 登录前的本地和下载入口可直接使用，发现按钮真正切换到底部发现页。
+    // 登录前的本地和顶部下载入口可直接使用，发现按钮真正切换到底部发现页。
     @Test fun guestOfflineAndDiscoveryActionsKeepWorking() {
         openLibrary(AppearanceMode.Light)
         compose.onNodeWithContentDescription("本地音乐").performClick()
         compose.onNodeWithText("导入本地音频").assertIsDisplayed()
         compose.onNodeWithContentDescription("播放歌曲：晚风经过").assertIsDisplayed()
-        compose.onNodeWithContentDescription("返回我的音乐").performClick()
-        compose.onNodeWithContentDescription("已下载").performClick()
+        compose.onNodeWithContentDescription("我喜欢").performClick()
+        compose.onNodeWithContentDescription("下载管理").performClick()
         compose.onNodeWithText("下载管理").assertIsDisplayed()
         compose.onNodeWithContentDescription("返回下载管理").performClick()
         compose.waitUntil { compose.onAllNodesWithContentDescription("返回下载管理").fetchSemanticsNodes().isEmpty() }
@@ -74,12 +76,11 @@ class LibraryReferenceFlowTest {
         compose.onNodeWithContentDescription("打开播放页").performClick()
         compose.onNodeWithContentDescription("收起播放页").performClick()
         compose.onNodeWithText("喜欢的歌曲").assertIsDisplayed()
-        compose.onNode(hasScrollToIndexAction()).performScrollToKey("library-playlists")
         compose.onNodeWithContentDescription("我的歌单").assertIsDisplayed()
         capture("library-reference-local-favorites")
     }
 
-    // 同一生产组件切换真实账号展示数据，卡片高度与离线区域位置保持不变，不写入账号容器。
+    // 同一生产组件切换真实账号展示数据，卡片高度与四个入口位置保持不变，不写入账号容器。
     @Test fun signedInIdentityKeepsGuestCardAndOfflineLayout() {
         val identity = mutableStateOf(LibraryIdentity.from(AccountState(restoring = false), false))
         var accountClicks = 0
@@ -88,23 +89,21 @@ class LibraryReferenceFlowTest {
                 Surface {
                     Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
                         LibraryIdentityCard(identity.value) { accountClicks++ }
-                        LibraryOfflineAccess({}, {}, {})
+                        LibraryShortcuts(LibraryTab.Favorites) {}
                         LibraryCollectionEmpty(identity.value.authenticated) {}
-                        LibraryPlaylistAccess(identity.value.authenticated, if (identity.value.authenticated) 4 else null) {}
                     }
                 }
             }
         } }
         val before = compose.onNodeWithTag("library-identity-card").fetchSemanticsNode().boundsInRoot
-        val offlineBefore = compose.onNodeWithText("离线也能听").fetchSemanticsNode().boundsInRoot
+        val offlineBefore = compose.onNodeWithContentDescription("本地音乐").fetchSemanticsNode().boundsInRoot
         compose.runOnIdle { identity.value = LibraryIdentity.from(AccountState(
             profile = AccountProfile("ui-fixture", "林间旅人"), restoring = false, verified = true), true) }
         compose.onNodeWithText("林间旅人").assertIsDisplayed()
         compose.onNodeWithText("查看账号").performClick()
         assertEquals(1, accountClicks)
         assertEquals(before, compose.onNodeWithTag("library-identity-card").fetchSemanticsNode().boundsInRoot)
-        assertEquals(offlineBefore, compose.onNodeWithText("离线也能听").fetchSemanticsNode().boundsInRoot)
-        compose.onNodeWithText("4 个歌单").assertIsDisplayed()
+        assertEquals(offlineBefore, compose.onNodeWithContentDescription("本地音乐").fetchSemanticsNode().boundsInRoot)
         compose.onNodeWithText("登录后查看").assertDoesNotExist()
         capture("library-reference-signed-components")
     }
@@ -124,8 +123,8 @@ class LibraryReferenceFlowTest {
     // 保存实际系统画面，核对安全区域、固定导航与主题配色。
     private fun capture(name: String) {
         compose.waitForIdle()
-        val title = if (compose.onAllNodesWithText("我的音乐").fetchSemanticsNodes().isEmpty()) "离线也能听" else "我的音乐"
-        compose.onNodeWithText(title).performTouchInput { click(center) }
+        val title = if (compose.onAllNodesWithText("我的音乐").fetchSemanticsNodes().isEmpty()) "本地音乐" else "我的音乐"
+        compose.onAllNodesWithText(title).onFirst().performTouchInput { click(center) }
         android.os.SystemClock.sleep(400)
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val directory = File(instrumentation.targetContext.cacheDir, "kimo-reference-previews").apply { mkdirs() }

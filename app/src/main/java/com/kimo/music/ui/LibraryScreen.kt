@@ -12,9 +12,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.QueueMusic
 import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
+import androidx.compose.material.icons.automirrored.outlined.PlaylistPlay
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.RemoveCircle
 import androidx.compose.material.icons.outlined.*
@@ -71,9 +71,10 @@ fun DiscoverScreen(model: MusicViewModel, onPlay: (Track, List<Track>) -> Unit) 
     }
 }
 
-private enum class LibraryTab(val title: String) {
-    Overview("喜欢的歌曲"), Favorites("喜欢的歌曲"), Playlists("云歌单"), Local("本地音乐"), Recent("最近播放")
+internal enum class LibraryTab(val title: String, val shortcutTitle: String) {
+    Favorites("喜欢的歌曲", "我喜欢"), Playlists("我的歌单", "我的歌单"), Local("本地音乐", "本地音乐"), Recent("最近播放", "最近播放")
 }
+internal data class ExpandedLibraryPlaylist(val entry: CatalogEntry, val songs: PagedFeed<Track>)
 private enum class LibraryOverlay { Settings, CreatePlaylist, TrackActions }
 // 设置页需要跨配置恢复，歌曲操作仍只保留当前界面的临时选中对象。
 private val SettingsOverlaySaver = Saver<MutableState<LibraryOverlay?>, Boolean>(
@@ -102,27 +103,43 @@ private class LibraryNavigation(tabState: MutableState<LibraryTab>, overlayState
 // 栏目和设置在配置变化后恢复，歌曲操作只保留当前界面的临时状态。
 @Composable
 private fun rememberLibraryNavigation(): LibraryNavigation {
-    val tab = rememberSaveable { mutableStateOf(LibraryTab.Overview) }
+    val tab = rememberSaveable { mutableStateOf(LibraryTab.Favorites) }
     val overlay = rememberSaveable(saver = SettingsOverlaySaver) { mutableStateOf<LibraryOverlay?>(null) }
     val track = remember { mutableStateOf<Track?>(null) }
     return remember { LibraryNavigation(tab, overlay, track) }
 }
 
-// 总览复刻账号黑胶卡、离线入口和收藏分区，详情列表继续使用原有播放能力。
+// 账号卡和四个入口固定采用同一结构，选中栏目只替换下方真实内容。
 @Composable
 fun LibraryScreen(model: MusicViewModel, actions: LibraryActions, active: Boolean = true) {
     val navigation = rememberLibraryNavigation()
-    val tracks = navigation.tab.selectedTracks(model)
+    val owner = model.account.credentials?.userId
+    var expandedId by rememberSaveable(owner) { mutableStateOf<String?>(null) }
+    val entry = model.online.cloud.playlists.firstOrNull { it.id == expandedId }
+    val expanded = rememberExpandedPlaylist(model, owner, entry)
+    val tracks = if (navigation.tab == LibraryTab.Playlists) expanded?.songs?.state?.items.orEmpty() else navigation.tab.selectedTracks(model)
     val pages = rememberSaveableStateHolder()
-    BackHandler(active && navigation.tab != LibraryTab.Overview) { navigation.tab = LibraryTab.Overview }
-    pages.SaveableStateProvider(navigation.tab.name) { LibraryPageContent(model, navigation, actions, tracks) }
+    BackHandler(active && navigation.tab != LibraryTab.Favorites) { navigation.tab = LibraryTab.Favorites }
+    pages.SaveableStateProvider(navigation.tab.name) {
+        LibraryPageContent(model, navigation, actions, tracks, expanded) { expandedId = if (expandedId == it.id) null else it.id }
+    }
     LibraryOverlays(navigation, model, actions, tracks)
 }
 
-// 每个栏目独立保存滚动位置，固定工具栏让长列表中的搜索和设置始终可达。
+// 展开状态按账号和目录隔离，收起或切换账号时取消迟到的分页请求。
+@Composable
+private fun rememberExpandedPlaylist(model: MusicViewModel, owner: String?, entry: CatalogEntry?): ExpandedLibraryPlaylist? {
+    val expanded = remember(model.online, owner, entry) { entry?.let { ExpandedLibraryPlaylist(it, model.online.playlistSongs(it)) } }
+    DisposableEffect(expanded) { onDispose { expanded?.songs?.reset() } }
+    LaunchedEffect(expanded) { expanded?.songs?.ensureLoaded() }
+    return expanded
+}
+
+// 各栏目独立保存滚动位置，切换后仍保留账号卡和同一排快捷入口。
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun LibraryPageContent(model: MusicViewModel, navigation: LibraryNavigation, actions: LibraryActions, tracks: List<Track>) {
+private fun LibraryPageContent(model: MusicViewModel, navigation: LibraryNavigation, actions: LibraryActions,
+    tracks: List<Track>, expanded: ExpandedLibraryPlaylist?, onExpand: (CatalogEntry) -> Unit) {
     LazyColumn(contentPadding = PaddingValues(horizontal = KimoLayout.PageInset, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)) {
         stickyHeader(key = "library-header") {
@@ -130,72 +147,92 @@ private fun LibraryPageContent(model: MusicViewModel, navigation: LibraryNavigat
                 LibraryHeader(actions.search, { model.downloadsRequested = true }) { navigation.overlay = LibraryOverlay.Settings }
             }
         }
-        if (navigation.tab == LibraryTab.Overview) libraryOverviewItems(model, navigation, actions, tracks)
-        else {
-            item { LibrarySectionHeader(navigation, model, tracks.size) }
-            item { LibrarySectionActions(navigation, model, actions, tracks) }
-            libraryContentItems(model, navigation, actions, tracks)
-            item { LibraryStatus(navigation.tab, model, tracks.isEmpty()) }
+        item(key = "library-identity") {
+            LibraryIdentityCard(LibraryIdentity.from(model.account.state, model.account.credentials != null)) { model.loginRequested = true }
         }
+        item(key = "library-shortcuts") { LibraryShortcuts(navigation.tab) { navigation.tab = it } }
+        item(key = "library-section-heading") { LibrarySectionHeader(navigation, model, tracks.size) }
+        if (navigation.tab == LibraryTab.Playlists) libraryPlaylistItems(model, navigation, actions, expanded, onExpand)
+        else librarySongItems(model, navigation, actions, tracks)
     }
 }
 
-// 登录后只更新真实账号与云端数据，功能位置和卡片外观保持稳定。
-private fun LazyListScope.libraryOverviewItems(model: MusicViewModel, navigation: LibraryNavigation,
+// 空收藏展示发现入口，其他栏目继续保留导入、播放全部及当前队列操作。
+private fun LazyListScope.librarySongItems(model: MusicViewModel, navigation: LibraryNavigation,
     actions: LibraryActions, tracks: List<Track>) {
-    val authenticated = model.account.credentials != null
-    item(key = "library-identity") {
-        LibraryIdentityCard(LibraryIdentity.from(model.account.state, authenticated)) { model.loginRequested = true }
+    if (navigation.tab == LibraryTab.Favorites && tracks.isEmpty()) {
+        item(key = "library-favorites-empty") { LibraryOverviewEmpty(model, actions.discover) }
+        return
     }
-    item(key = "library-offline") {
-        Spacer(Modifier.height(8.dp))
-        LibraryOfflineAccess({ navigation.tab = LibraryTab.Local }, { model.downloadsRequested = true },
-            { navigation.tab = LibraryTab.Recent })
+    item { LibrarySectionActions(navigation, model, actions, tracks) }
+    items(tracks, key = Track::id, contentType = { "library-song" }) { track ->
+        LibrarySongRow(track, { actions.play(track, tracks) }, { navigation.showTrack(track) })
     }
-    item(key = "library-favorites-heading") { LibraryOverviewHeading(model, tracks.size) { navigation.tab = LibraryTab.Favorites } }
-    libraryFavoritePreview(model, navigation, actions, tracks)
-    item(key = "library-playlists") {
-        LibraryPlaylistAccess(authenticated, model.online.cloud.playlists.size.takeIf { model.online.cloud.loaded }) {
-            if (authenticated) navigation.tab = LibraryTab.Playlists else model.loginRequested = true
-        }
-    }
-    item { Spacer(Modifier.height(8.dp)) }
+    item { LibraryStatus(navigation.tab, model, tracks.isEmpty()) }
 }
 
-// 总览只预览三首收藏，长列表不会将歌单入口推到数百首歌曲之后。
-private fun LazyListScope.libraryFavoritePreview(model: MusicViewModel, navigation: LibraryNavigation,
-    actions: LibraryActions, tracks: List<Track>) {
-    if (tracks.isEmpty()) item(key = "library-favorites-empty") { LibraryOverviewEmpty(model, actions.discover) }
-    else {
-        item { LibraryPlayAll(tracks, actions) }
-        items(tracks.take(FAVORITE_PREVIEW_COUNT), key = Track::id, contentType = { "library-song" }) { track ->
-            LibrarySongRow(track, { actions.play(track, tracks) }, { navigation.showTrack(track) })
-        }
-        if (tracks.size > FAVORITE_PREVIEW_COUNT) item {
-            TextButton({ navigation.tab = LibraryTab.Favorites }, Modifier.fillMaxWidth()) { Text("查看全部 ${tracks.size} 首收藏") }
-        }
-        item { LibraryStatus(LibraryTab.Overview, model, false) }
+// 歌单列表和展开曲目共用一张惰性列表，长歌单分页不会一次创建数百行视图。
+private fun LazyListScope.libraryPlaylistItems(model: MusicViewModel, navigation: LibraryNavigation,
+    actions: LibraryActions, expanded: ExpandedLibraryPlaylist?, onExpand: (CatalogEntry) -> Unit) {
+    item { LibrarySectionActions(navigation, model, actions, emptyList()) }
+    if (model.account.credentials == null) {
+        item { LibraryPlaylistSignIn(model) }
+        return
+    }
+    libraryPlaylistRows(model.online.cloud.playlists, expanded, model.online.loadingAll,
+        LibraryPlaylistActions(onExpand, actions.play, navigation::showTrack) { entry ->
+            model.online.playAll(entry, { songs -> songs.firstOrNull()?.let { actions.play(it, songs) } }, model::notice)
+        })
+    item { LibraryPlaylistStatus(model) }
+}
+
+internal data class LibraryPlaylistActions(val toggle: (CatalogEntry) -> Unit, val play: (Track, List<Track>) -> Unit,
+    val more: (Track) -> Unit, val playAll: (CatalogEntry) -> Unit)
+
+// 一张惰性列表展开歌单和已加载的曲目，收起后保留下一张歌单的原始顺序。
+internal fun LazyListScope.libraryPlaylistRows(entries: List<CatalogEntry>, expanded: ExpandedLibraryPlaylist?,
+    loadingAll: Boolean, actions: LibraryPlaylistActions) {
+    entries.forEach { entry ->
+        item(key = "playlist-${entry.id}") { LibraryPlaylistHeader(entry, expanded?.entry?.id == entry.id) { actions.toggle(entry) } }
+        if (expanded?.entry?.id == entry.id) expandedPlaylistItems(expanded, loadingAll, actions)
     }
 }
 
-private const val FAVORITE_PREVIEW_COUNT = 3
+// 点击歌曲仍等待原有点歌动画完成，整单播放交由完整分页读取入口。
+private fun LazyListScope.expandedPlaylistItems(expanded: ExpandedLibraryPlaylist, loadingAll: Boolean, actions: LibraryPlaylistActions) {
+    item(key = "playlist-play-${expanded.entry.id}") {
+        TextButton({ actions.playAll(expanded.entry) }, enabled = !loadingAll) { Text(if (loadingAll) "正在读取歌单…" else "播放整个歌单") }
+    }
+    items(expanded.songs.state.items, key = { "playlist-${expanded.entry.id}-song-${it.id}" }, contentType = { "library-song" }) { track ->
+        LibrarySongRow(track, { actions.play(track, expanded.songs.state.items) }, { actions.more(track) })
+    }
+    item(key = "playlist-footer-${expanded.entry.id}") { FeedFooter(expanded.songs, "这个歌单暂时没有歌曲") }
+}
 
-// 收藏标题保留完整列表入口，未登录时同步操作明确引导登录。
+// 未登录时在歌单区域说明需要授权，四个栏目仍可自由切换。
 @Composable
-private fun LibraryOverviewHeading(model: MusicViewModel, count: Int, onOpen: () -> Unit) {
-    Column(Modifier.padding(top = 6.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Row(Modifier.weight(1f).clickable(role = Role.Button, onClick = onOpen)
-                .semantics { contentDescription = "查看我喜欢" }, verticalAlignment = Alignment.CenterVertically) {
-                Text("喜欢的歌曲", fontSize = 21.sp, lineHeight = 28.sp, fontWeight = FontWeight.SemiBold)
-                if (count > 0) Text("$count 首", Modifier.padding(start = 8.dp), fontSize = 12.sp, color = KimoColors.Secondary)
+private fun LibraryPlaylistSignIn(model: MusicViewModel) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 24.dp), horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Icon(Icons.AutoMirrored.Outlined.PlaylistPlay, null, Modifier.size(38.dp), tint = KimoColors.Secondary)
+        Text("登录后查看你的歌单", fontSize = 15.sp, color = KimoColors.Secondary)
+        TextButton({ model.loginRequested = true }) { Text("登录酷狗") }
+    }
+}
+
+// 云端列表的加载、失败与真实空态分别呈现，失败时允许原位重试。
+@Composable
+private fun LibraryPlaylistStatus(model: MusicViewModel) {
+    val cloud = model.online.cloud
+    Column(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        when {
+            cloud.loading -> CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+            cloud.error != null || !cloud.loaded -> {
+                Text(cloud.error ?: "暂时未能读取歌单", fontSize = 13.sp, color = KimoColors.Secondary)
+                TextButton({ requestLibrarySync(model) }) { Text("重新同步") }
             }
-            if (model.account.credentials != null) LibrarySyncButton(model)
-            else TextButton({ model.loginRequested = true }, contentPadding = PaddingValues(horizontal = 0.dp)) {
-                Text("登录后同步", color = KimoColors.Secondary, fontSize = 12.sp)
-            }
+            cloud.playlists.isEmpty() -> Text("还没有歌单，可以新建一个。", color = KimoColors.Secondary)
         }
-        HorizontalDivider(color = KimoColors.Rail.copy(alpha = 0.55f), thickness = 0.5.dp)
     }
 }
 
@@ -226,19 +263,9 @@ private fun LibraryCollectionRetry(model: MusicViewModel) {
     }
 }
 
-// 目录与曲目分别渲染，已加载的云歌单不会被占位入口覆盖。
-private fun LazyListScope.libraryContentItems(model: MusicViewModel, navigation: LibraryNavigation,
-                                              actions: LibraryActions, tracks: List<Track>) {
-    if (navigation.tab == LibraryTab.Playlists) items(model.online.cloud.playlists, key = CatalogEntry::id) { entry ->
-        CatalogRow(entry, { model.online.open(entry) })
-    } else items(tracks, key = Track::id, contentType = { "library-song" }) { track ->
-        LibrarySongRow(track, { actions.play(track, tracks) }, { navigation.showTrack(track) })
-    }
-}
-
 // 收藏集合包含完整云收藏及本机收藏，同一音频只在列表中显示一次。
 private fun LibraryTab.selectedTracks(model: MusicViewModel): List<Track> = when (this) {
-    LibraryTab.Overview, LibraryTab.Favorites -> model.favoriteTracks
+    LibraryTab.Favorites -> model.favoriteTracks
     LibraryTab.Local -> model.localTracks + model.downloadedTracks
     LibraryTab.Recent -> model.recentTracks
     else -> emptyList()
@@ -273,24 +300,25 @@ private fun requestLibrarySync(model: MusicViewModel) {
     if (model.account.credentials == null) model.loginRequested = true else model.online.syncAccount()
 }
 
-// 分区标题保留实时数量，非收藏栏目提供明确返回入口。
+// 下方标题始终对应选中的栏目，收藏同步与真实数量保留原有数据来源。
 @Composable
 private fun LibrarySectionHeader(navigation: LibraryNavigation, model: MusicViewModel, trackCount: Int) {
     val playlists = navigation.tab == LibraryTab.Playlists
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        if (navigation.tab != LibraryTab.Overview) ActionIcon("返回我的音乐", Icons.AutoMirrored.Outlined.ArrowBack) {
-            navigation.tab = LibraryTab.Overview
+    val countKnown = if (playlists || navigation.tab == LibraryTab.Favorites)
+        model.account.credentials == null || model.online.cloud.loaded else true
+    Column {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(navigation.tab.title, fontSize = 20.sp, lineHeight = 28.sp, fontWeight = FontWeight.SemiBold)
+            if (countKnown && (!playlists || model.account.credentials != null)) Text(
+                if (playlists) "${model.online.cloud.playlists.size} 个" else "$trackCount 首",
+                Modifier.padding(start = 10.dp), fontSize = 12.sp, color = KimoColors.Secondary)
+            Spacer(Modifier.weight(1f))
+            if (navigation.tab == LibraryTab.Favorites) {
+                if (model.account.credentials != null) LibrarySyncButton(model)
+                else TextButton({ model.loginRequested = true }) { Text("登录后同步", fontSize = 12.sp, color = KimoColors.Secondary) }
+            }
         }
-        Text(navigation.tab.title, fontSize = 20.sp, lineHeight = 28.sp, fontWeight = FontWeight.SemiBold)
-        val countKnown = when (navigation.tab) {
-            LibraryTab.Playlists -> model.online.cloud.loaded
-            LibraryTab.Overview, LibraryTab.Favorites -> model.account.credentials == null || model.online.cloud.loaded
-            else -> true
-        }
-        if (countKnown) Text(if (playlists) "${model.online.cloud.playlists.size} 个" else "$trackCount 首",
-            Modifier.weight(1f).padding(start = 10.dp), fontSize = 12.sp, lineHeight = 18.sp, color = KimoColors.Secondary)
-        else Spacer(Modifier.weight(1f))
-        if (navigation.tab == LibraryTab.Favorites) LibrarySyncButton(model)
+        HorizontalDivider(color = KimoColors.Rail.copy(alpha = 0.55f), thickness = 0.5.dp)
     }
 }
 
@@ -303,10 +331,11 @@ private fun LibrarySectionActions(navigation: LibraryNavigation, model: MusicVie
             OutlinedButton(actions.importAudio) { Text("导入本地音频") }
             TextButton({ model.localLibraryRequested = true }) { Text("管理曲库") }
         }
-        if (navigation.tab == LibraryTab.Playlists) OutlinedButton({
-            if (model.account.state.verified) navigation.overlay = LibraryOverlay.CreatePlaylist else model.loginRequested = true
-        }) { Icon(Icons.Outlined.Add, null); Text("新建云歌单") }
-        else LibraryPlayAll(tracks, actions)
+        if (navigation.tab == LibraryTab.Playlists) {
+            if (model.account.credentials != null) OutlinedButton({
+                if (model.account.state.verified) navigation.overlay = LibraryOverlay.CreatePlaylist else model.loginRequested = true
+            }) { Icon(Icons.Outlined.Add, null); Text("新建云歌单") }
+        } else LibraryPlayAll(tracks, actions)
     }
 }
 
@@ -352,11 +381,11 @@ private fun LibrarySongRow(track: Track, onPlay: () -> Unit, onMore: () -> Unit)
 // 错误及缓存状态与正常空库分别展示，失败不清空已有曲目。
 @Composable
 private fun LibraryStatus(tab: LibraryTab, model: MusicViewModel, empty: Boolean) {
-    val cloud = tab in listOf(LibraryTab.Overview, LibraryTab.Favorites, LibraryTab.Playlists)
+    val cloud = tab in listOf(LibraryTab.Favorites, LibraryTab.Playlists)
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (cloud) model.online.cloud.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         if (cloud) model.account.state.error?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.error) }
-        if (cloud && tab != LibraryTab.Overview && model.account.credentials == null) Text("登录酷狗后可查看收藏与歌单。", fontSize = 12.sp, color = KimoColors.Secondary)
+        if (cloud && model.account.credentials == null) Text("登录酷狗后可查看收藏与歌单。", fontSize = 12.sp, color = KimoColors.Secondary)
         else if (empty && !model.online.cloud.loading && tab != LibraryTab.Playlists &&
             (!cloud || model.online.cloud.loaded)) Text("这里暂时没有歌曲。", color = KimoColors.Secondary)
     }
@@ -395,7 +424,7 @@ private fun LibraryTrackSheet(track: Track, tab: LibraryTab, model: MusicViewMod
         KimoTipWindow()
         ThemedSheetNavigationBar()
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 12.dp)) {
-            LibrarySheetTrackHeader(track, if (tab in listOf(LibraryTab.Overview, LibraryTab.Favorites)) "我喜欢" else tab.title)
+            LibrarySheetTrackHeader(track, if (tab == LibraryTab.Favorites) "我喜欢" else tab.title)
             HorizontalDivider(Modifier.padding(vertical = 10.dp), thickness = 0.5.dp, color = KimoColors.Rail)
             LibrarySheetAction("播放这首歌", { onDismiss(); onPlay() }, highlighted = true) {
                 Icon(Icons.Rounded.PlayArrow, null, Modifier.size(34.dp).background(KimoColors.Orange, CircleShape).padding(7.dp), tint = Color.White)

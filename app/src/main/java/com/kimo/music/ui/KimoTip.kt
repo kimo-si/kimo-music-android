@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -21,6 +20,7 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import com.kimo.music.ui.theme.KimoColors
+import kotlinx.coroutines.delay
 
 private val LocalTipWindows = staticCompositionLocalOf<TipWindows?> { null }
 private val LocalTipTopInset = staticCompositionLocalOf { 0 }
@@ -31,6 +31,7 @@ private val TipPopupProperties = PopupProperties(
 )
 
 private object TipStyle {
+    const val DurationMs = 3_000L
     val MaxWidth = 360.dp
     val PageInset = 20.dp
     val TopGap = 12.dp
@@ -55,6 +56,9 @@ private class TipWindows(val snackbar: SnackbarHostState) {
 @Composable
 internal fun KimoTipProvider(snackbar: SnackbarHostState, content: @Composable () -> Unit) {
     val windows = remember(snackbar) { TipWindows(snackbar) }
+    val message = snackbar.currentSnackbarData
+    // 消息身份变化时重新计时，切换窗口或主题不会延长同一条提示。
+    LaunchedEffect(message) { if (message != null) { delay(TipStyle.DurationMs); message.dismiss() } }
     val density = LocalDensity.current
     val top = WindowInsets.safeDrawing.getTop(density) + with(density) { TipStyle.TopGap.roundToPx() }
     CompositionLocalProvider(LocalTipWindows provides windows, LocalTipTopInset provides top) {
@@ -87,14 +91,14 @@ private class TipPosition(private val top: Int) : PopupPositionProvider {
         IntOffset((windowSize.width - popupContentSize.width) / 2, top)
 }
 
-// 暖纸与午夜皮肤共用圆角浮层，长消息自然换行并保留明确的关闭入口。
+// 暖纸与午夜皮肤共用圆角浮层，长消息自然换行，三秒后由统一宿主自动关闭。
 @Composable
 private fun KimoTip(data: SnackbarData) {
     Surface(Modifier.widthIn(max = TipStyle.MaxWidth).fillMaxWidth().testTag("global-tip"),
         shape = RoundedCornerShape(TipStyle.Radius), color = KimoColors.TipSurface,
         contentColor = KimoColors.Ink, shadowElevation = 8.dp,
         border = BorderStroke(0.75.dp, KimoColors.Rail.copy(alpha = 0.7f))) {
-        Row(Modifier.heightIn(min = 60.dp).padding(start = 14.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+        Row(Modifier.heightIn(min = 60.dp).padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Box(Modifier.size(TipStyle.IconSize).background(KimoColors.Orange.copy(alpha = 0.12f), CircleShape),
                 contentAlignment = Alignment.Center) {
@@ -105,9 +109,6 @@ private fun KimoTip(data: SnackbarData) {
                 data.visuals.actionLabel?.let { label ->
                     TextButton(data::performAction, contentPadding = PaddingValues(0.dp)) { Text(label, color = KimoColors.Orange) }
                 }
-            }
-            IconButton(data::dismiss, Modifier.size(48.dp)) {
-                Icon(Icons.Outlined.Close, "关闭提示", Modifier.size(17.dp), tint = KimoColors.Secondary)
             }
         }
     }
