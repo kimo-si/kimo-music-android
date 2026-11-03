@@ -183,7 +183,7 @@ private fun MainScreen(destination: Destination, model: MusicViewModel, onImport
     when (destination) {
         Destination.Home -> HomeScreen(model, onSearch, { onNavigate(Destination.Discover) }, onPlay)
         Destination.Discover -> DiscoverScreen(model, onPlay)
-        Destination.Library -> LibraryScreen(model, LibraryActions(onImport, onPlay, onSearch, onQueue, onQuality), active)
+        Destination.Library -> LibraryScreen(model, LibraryActions(onImport, onPlay, onSearch, onQueue, onQuality, { onNavigate(Destination.Discover) }), active)
     }
 }
 

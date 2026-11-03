@@ -22,13 +22,13 @@ Kimo 使用 Kotlin、Jetpack Compose 和 Media3 构建界面与播放器，通�
     <td><img src="docs/screenshots/search-light.webp" alt="歌曲搜索结果，按实际资源权益区分 VIP 与免费版本" width="240" /></td>
   </tr>
   <tr>
-    <th>本地曲库</th>
+    <th>我的音乐</th>
     <th>午夜深色</th>
     <th>外观皮肤</th>
   </tr>
   <tr>
-    <td><img src="docs/screenshots/library-light.webp" alt="我的音乐中的本地曲库和歌曲操作入口" width="240" /></td>
-    <td><img src="docs/screenshots/library-dark.webp" alt="午夜深色主题下的我的音乐页面" width="240" /></td>
+    <td><img src="docs/screenshots/library-light.webp" alt="浅色我的音乐总览中的账号黑胶卡、离线入口和收藏区域" width="240" /></td>
+    <td><img src="docs/screenshots/library-dark.webp" alt="午夜深色我的音乐总览，展示登录入口、离线功能与收藏空状态" width="240" /></td>
     <td><img src="docs/screenshots/appearance.webp" alt="外观设置，支持暖纸浅色、午夜深色与跟随系统" width="240" /></td>
   </tr>
   <tr>
@@ -60,6 +60,7 @@ Kimo 使用 Kotlin、Jetpack Compose 和 Media3 构建界面与播放器，通�
 | 同步歌词 | 在线 LRC、逐行高亮与平滑过渡，支持自动滚动、点击歌词跳转和失败重试 |
 | 账号与收藏 | 手机号验证码 / 二维码登录，同步我喜欢与云歌单；收藏立即更新爱心，写入确认后反馈结果 |
 | 云歌单管理 | 创建、重命名、删除或取消收藏歌单，向歌单添加当前歌曲，读取完整分页曲目 |
+| 我的音乐 | 登录前后统一的黑胶账号卡、离线入口、收藏预览与云歌单入口；各栏目独立保留滚动位置 |
 | 本地音乐 | 多文件导入、元数据与内嵌封面读取、本机收藏、最近播放及持久文件访问权限 |
 | 音质与权益 | 标准、高品、无损音质；根据账号实际权益取流，并核实歌曲的 VIP 标识 |
 | 主题外观 | 暖纸浅色、午夜深色和跟随系统；设置、登录、弹层及全局提示统一适配 |
@@ -259,7 +260,7 @@ kimo-music-android/
 
 ### 音乐云盘是否可用？
 
-当前界面保留云盘快捷入口，点击会提示暂未开放；尚未提供可操作的云盘页面。
+当前尚未提供可操作的音乐云盘页面，新总览不展示这一未开放入口。
 
 ### 为什么部分封面、歌词或在线列表加载失败？
 

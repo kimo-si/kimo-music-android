@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.MusicNote
+import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -45,6 +46,7 @@ import coil3.request.ImageRequest
 import coil3.request.allowHardware
 import coil3.toBitmap
 import com.kimo.music.data.Track
+import com.kimo.music.ui.theme.KimoColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.PI
@@ -254,4 +256,71 @@ private fun averageVinylColor(bitmap: Bitmap): Int? {
     }
     if (count == 0) return null
     return android.graphics.Color.rgb((red / count).toInt(), (green / count).toInt(), (blue / count).toInt())
+}
+
+// 账号卡使用静态黑胶装饰，不订阅播放器进度或创建持续旋转动画。
+@Composable
+internal fun LibraryRecordIllustration(modifier: Modifier = Modifier) {
+    val accent = KimoColors.Orange
+    Canvas(modifier) {
+        val radius = size.minDimension / 2f
+        drawCircle(Brush.radialGradient(listOf(Color(0xFF30322E), Color(0xFF111411), Color(0xFF20231F)),
+            center = center, radius = radius), radius = radius)
+        drawLibraryGrooves(radius)
+        drawCircle(Brush.sweepGradient(listOf(Color.Transparent, Color.White.copy(alpha = 0.14f),
+            Color.Transparent, Color.Transparent, Color.White.copy(alpha = 0.05f), Color.Transparent)), radius = radius)
+        drawCircle(Brush.linearGradient(listOf(accent, accent.copy(alpha = 0.64f))), radius = radius * 0.31f)
+        drawCircle(Color.White.copy(alpha = 0.12f), radius * 0.31f, style = Stroke(0.7.dp.toPx()))
+        drawCircle(Color(0xFF191C18), radius * 0.043f)
+        drawCircle(Color.White.copy(alpha = 0.25f), radius * 0.043f, style = Stroke(0.5.dp.toPx()))
+    }
+}
+
+// 唱片旁的低对比波形复用主题强调色，始终静止以免与真实播放状态混淆。
+@Composable
+internal fun LibraryHeroWaveform(modifier: Modifier = Modifier) {
+    val accent = KimoColors.Orange
+    Canvas(modifier) {
+        val levels = listOf(0.16f, 0.34f, 0.65f, 1f, 0.68f, 0.42f, 0.20f)
+        levels.forEachIndexed { index, level ->
+            val x = (index + 0.5f) * size.width / levels.size
+            val length = size.height * level
+            drawLine(accent.copy(alpha = 0.22f), Offset(x, center.y - length / 2), Offset(x, center.y + length / 2),
+                strokeWidth = 2.2.dp.toPx(), cap = StrokeCap.Round)
+        }
+    }
+}
+
+// 同心沟槽与固定高光共同呈现黑胶质感，装饰线始终随实际尺寸缩放。
+private fun DrawScope.drawLibraryGrooves(radius: Float) {
+    repeat(46) { index ->
+        val ring = radius * (0.35f + index * 0.0136f)
+        drawCircle(if (index % 3 == 0) Color.White.copy(alpha = 0.075f) else Color.Black.copy(alpha = 0.28f),
+            ring, style = Stroke(width = if (index % 3 == 0) 0.45.dp.toPx() else 0.7.dp.toPx()))
+    }
+    drawCircle(Color.White.copy(alpha = 0.16f), radius - 0.8.dp.toPx(), style = Stroke(0.6.dp.toPx()))
+}
+
+// 收藏空态沿用黑胶与爱心语义，装饰图不会被读屏重复朗读。
+@Composable
+internal fun LibraryCollectionIllustration(modifier: Modifier = Modifier) {
+    val muted = KimoColors.Secondary
+    val accent = KimoColors.Orange
+    Box(modifier, contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize()) {
+            val radius = size.height * 0.40f
+            val origin = Offset(size.width * 0.46f, size.height * 0.46f)
+            drawOval(muted.copy(alpha = 0.10f), Offset(size.width * 0.12f, size.height * 0.88f),
+                androidx.compose.ui.geometry.Size(size.width * 0.76f, size.height * 0.055f))
+            drawCircle(muted.copy(alpha = 0.57f), radius, origin, style = Stroke(1.6.dp.toPx()))
+            drawCircle(muted.copy(alpha = 0.22f), radius * 0.87f, origin, style = Stroke(0.8.dp.toPx()))
+            drawCircle(muted.copy(alpha = 0.31f), radius * 0.45f, origin, style = Stroke(1.dp.toPx()))
+            drawArc(muted.copy(alpha = 0.55f), 205f, 57f, false,
+                Offset(origin.x - radius * 0.75f, origin.y - radius * 0.75f),
+                androidx.compose.ui.geometry.Size(radius * 1.5f, radius * 1.5f), style = Stroke(1.7.dp.toPx(), cap = StrokeCap.Round))
+        }
+        Icon(Icons.Outlined.MusicNote, null, Modifier.size(25.dp).offset(x = (-5).dp, y = (-4).dp), tint = accent)
+        Icon(Icons.Outlined.FavoriteBorder, null, Modifier.align(Alignment.BottomEnd).padding(end = 2.dp, bottom = 4.dp)
+            .size(35.dp).background(KimoColors.Paper, CircleShape), tint = accent)
+    }
 }

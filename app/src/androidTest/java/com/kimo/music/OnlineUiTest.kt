@@ -37,11 +37,11 @@ class OnlineUiTest {
     // 手动同步只保留在喜欢的歌曲右侧，其他入口依赖后台同步。
     @Test fun libraryShowsOnlyFavoritesSyncAction() {
         compose.onNodeWithText("我的", useUnmergedTree = true).performClick()
-        compose.onAllNodesWithText("同步").assertCountEquals(1)
+        compose.onAllNodesWithText("登录后同步").assertCountEquals(1)
         compose.onNodeWithText("立即同步").assertDoesNotExist()
         compose.onNodeWithText("账号与同步").assertDoesNotExist()
-        compose.onNodeWithContentDescription("云歌单").performClick()
-        compose.onAllNodesWithText("同步").assertCountEquals(0)
+        compose.onNodeWithContentDescription("本地音乐").performClick()
+        compose.onAllNodesWithText("登录后同步").assertCountEquals(0)
     }
 
     // 检查真实本机收藏计数、歌曲菜单及从收藏列表启动播放，不修改任何云端账号。
@@ -51,13 +51,13 @@ class OnlineUiTest {
         compose.onNodeWithContentDescription("查看我喜欢").assertIsDisplayed()
         saveImage("library", compose.onRoot())
         val initialCount = model.favoriteTracks.size
-        compose.onNodeWithText("$initialCount 首珍藏").assertIsDisplayed()
+        compose.onNodeWithText("$initialCount 首").assertIsDisplayed()
         compose.onNodeWithContentDescription("本地音乐").performClick()
         compose.onNodeWithContentDescription("歌曲操作：晚风经过").performScrollTo().performClick()
         compose.onNodeWithText("取消喜欢").performClick()
         compose.runOnIdle { assertFalse("evening-wind" in model.favorites) }
-        compose.onNode(hasScrollToIndexAction()).performScrollToIndex(0)
-        compose.onNodeWithText("${initialCount - 1} 首珍藏").assertIsDisplayed()
+        compose.onNodeWithContentDescription("返回我的音乐").performClick()
+        compose.onNodeWithText("${initialCount - 1} 首").assertIsDisplayed()
         compose.onNodeWithContentDescription("播放歌曲：山谷来信").performScrollTo().performClick()
         compose.onNodeWithText("正在播放").assertDoesNotExist()
         compose.onNodeWithContentDescription("打开播放页").performClick()
@@ -83,16 +83,18 @@ class OnlineUiTest {
         compose.onNodeWithText("正在播放").assertDoesNotExist()
     }
 
-    // 云盘只显示占位反馈，其他快捷入口、搜索与设置仍保留真实导航。
-    @Test fun libraryShortcutsKeepCloudAsPlaceholder() {
+    // 新总览只展示可用入口，本地音乐无需登录，云歌单入口明确进入登录流程。
+    @Test fun libraryShortcutsOpenOfflineContentAndGateCloudPlaylists() {
         val model = openLibraryWithDemoFavorites()
-        compose.onNodeWithContentDescription("音乐云盘").performClick()
-        compose.onNodeWithText("音乐云盘暂未开放").assertIsDisplayed()
+        compose.onNodeWithContentDescription("音乐云盘").assertDoesNotExist()
         compose.runOnIdle { assertNull(model.online.detail) }
         compose.onNodeWithContentDescription("本地音乐").performClick()
         compose.onNodeWithText("导入本地音频").assertIsDisplayed()
-        compose.onNodeWithContentDescription("云歌单").performClick()
-        compose.onNodeWithText("新建云歌单").assertIsDisplayed()
+        compose.onNodeWithContentDescription("返回我的音乐").performClick()
+        compose.onNode(hasScrollToIndexAction()).performScrollToKey("library-playlists")
+        compose.onNodeWithContentDescription("我的歌单").performClick()
+        compose.onNodeWithText("欢迎回来").assertIsDisplayed()
+        compose.onNodeWithContentDescription("返回上一页").performClick()
         compose.onNodeWithContentDescription("搜索音乐").performClick()
         compose.onNodeWithContentDescription("搜索酷狗曲库").assertIsDisplayed()
         compose.onNodeWithContentDescription("返回上一页").performClick()
