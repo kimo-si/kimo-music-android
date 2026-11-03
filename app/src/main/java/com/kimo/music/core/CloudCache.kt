@@ -17,7 +17,7 @@ class CloudCache(context: Context) {
         val value = JSONObject(file(owner).readFully().toString(Charsets.UTF_8))
         require(value.getString("owner") == owner)
         CloudLibraryState(value.getJSONArray("playlists").objects().map(::decodeEntry),
-            value.getJSONArray("favorites").objects().map(TrackStorage::decode), ownerId = owner, fromCache = true)
+            value.getJSONArray("favorites").objects().map(TrackStorage::decode), ownerId = owner, fromCache = true, loaded = true)
     }.getOrNull()
 
     // 只有服务端完整同步成功的结果可以覆盖上次完整快照。

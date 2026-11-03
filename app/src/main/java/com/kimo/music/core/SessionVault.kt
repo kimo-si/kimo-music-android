@@ -20,7 +20,22 @@ data class AuthCredentials(val token: String, val userId: String, val t1: String
             if (dfid.isNotBlank()) put("dfid", dfid)
         }
 }
-data class AccountProfile(val userId: String, val nickname: String, val avatar: String? = null, val vip: Boolean = false)
+data class AccountProfile(val userId: String, val nickname: String, val avatar: String? = null, val vip: Boolean = false,
+    val nicknameVerified: Boolean = true) {
+    // 旧版本的默认昵称来源不明，在线确认之前不作为真实昵称展示。
+    val displayNickname: String get() = nickname.takeIf { nicknameVerified }.orEmpty()
+
+    companion object {
+        // 按旧会话格式恢复资料，保留原始昵称并标记无法确认的默认值。
+        internal fun restored(userId: String, data: JSONObject): AccountProfile {
+            val nickname = data.optString("nickname")
+            return AccountProfile(userId, nickname, data.optString("avatar").takeIf { it.isNotBlank() && it != "null" },
+                data.optBoolean("vip"), data.optBoolean("nicknameVerified", nickname != LEGACY_NICKNAME))
+        }
+
+        private const val LEGACY_NICKNAME = "酷狗用户"
+    }
+}
 data class AccountSession(val credentials: AuthCredentials, val profile: AccountProfile)
 
 // Android Keystore 托管密钥；偏好文件中只保存 AES-GCM 密文，不复用电脑端登录态。
@@ -42,6 +57,7 @@ class SessionVault(context: Context) {
         cipher.init(Cipher.ENCRYPT_MODE, secretKey())
         val data = session.credentials.json().put("nickname", session.profile.nickname)
             .put("avatar", session.profile.avatar).put("vip", session.profile.vip)
+            .put("nicknameVerified", session.profile.nicknameVerified)
         val encrypted = cipher.iv + cipher.doFinal(data.toString().toByteArray(Charsets.UTF_8))
         preferences.edit { putString(SESSION_KEY, Base64.encodeToString(encrypted, Base64.NO_WRAP)) }
     }
@@ -65,8 +81,7 @@ class SessionVault(context: Context) {
         val credentials = AuthCredentials(data.getString("token"), data.getString("userid"),
             data.optString("t1"), data.optString("vip_token"), data.optString("vip_type"), data.optString("dfid"))
         require(credentials.token.isNotBlank() && credentials.userId.isNotBlank())
-        return AccountSession(credentials, AccountProfile(credentials.userId, data.optString("nickname", "酷狗用户"),
-            data.optString("avatar").takeIf { it.isNotBlank() && it != "null" }, data.optBoolean("vip")))
+        return AccountSession(credentials, AccountProfile.restored(credentials.userId, data))
     }
 
     private companion object {

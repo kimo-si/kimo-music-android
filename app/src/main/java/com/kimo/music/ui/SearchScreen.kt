@@ -17,7 +17,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -43,11 +45,18 @@ internal class SearchNavigation(queryState: MutableState<String>, submittedState
     var submitted by submittedState
     var kind by kindState
     var allHot by hotState
+    var editing by mutableStateOf(false); private set
+
+    // 用户编辑文本时才开启联想，未完成输入不会写入搜索历史。
+    fun edit(value: String) { query = value; editing = value.isNotBlank() }
+
+    // 焦点重新进入已有搜索词时恢复联想，离开输入框时收起提示。
+    fun changeFocus(focused: Boolean) { editing = focused && query.isNotBlank() }
 
     // 实际提交时保存历史并请求真实曲库，分类切换也沿用同一入口。
     fun submit(model: MusicViewModel, keyword: String = query, type: SearchKind = kind) {
         val word = keyword.trim().takeIf(String::isNotBlank) ?: return
-        query = word; submitted = word; kind = type
+        query = word; submitted = word; kind = type; editing = false
         // 记录已提交的搜索词，而不是用户尚未完成的输入。
         model.rememberSearch(word)
         // 请求对应分类，分页和取消交由现有在线曲库管理。
@@ -55,7 +64,7 @@ internal class SearchNavigation(queryState: MutableState<String>, submittedState
     }
 
     // 清空输入后回到最近搜索和热门推荐。
-    fun clear() { query = ""; submitted = "" }
+    fun clear() { query = ""; submitted = ""; editing = false }
 }
 
 internal data class SearchActions(val close: () -> Unit, val play: (Track, List<Track>) -> Unit,
@@ -76,11 +85,15 @@ private fun rememberSearchNavigation(): SearchNavigation {
 fun SearchScreen(model: MusicViewModel, onClose: () -> Unit, onPlay: (Track, List<Track>) -> Unit,
                  onOpenPlayer: () -> Unit) {
     val navigation = rememberSearchNavigation()
-    val feedback = remember { SongFlightState() }
+    val feedback = remember(model) { SongFlightState(model::beginSongSelection) }
     var queueVisible by rememberSaveable { mutableStateOf(false) }
     val actions = SearchActions(onClose, onPlay, onOpenPlayer) { queueVisible = true }
     SideEffect { feedback.setEnabled(navigation.submitted.isNotBlank()) }
-    LaunchedEffect(Unit) { model.online.hotSearches.ensureLoaded() }
+    LaunchedEffect(Unit) {
+        // 分别加载真实热搜和推荐歌单，不预填固定的搜索内容。
+        model.online.hotSearches.ensureLoaded()
+        model.online.playlists.ensureLoaded()
+    }
     CompositionLocalProvider(LocalSongFlight provides feedback) {
         Box(Modifier.fillMaxSize().background(KimoColors.Paper)) {
             SearchPageBody(model, navigation, actions)
@@ -93,16 +106,41 @@ fun SearchScreen(model: MusicViewModel, onClose: () -> Unit, onPlay: (Track, Lis
 // 顶部标题和输入框固定，下方推荐或结果独立滚动。
 @Composable
 private fun SearchPageBody(model: MusicViewModel, navigation: SearchNavigation, actions: SearchActions) {
+    // 页面生命周期内按输入词获取联想，关闭页面时自动取消等待中的请求。
+    val suggestions = rememberKeywordSuggestions(navigation.query, navigation.editing, model.account.api::searchSuggestions)
+    val keyboard = LocalSoftwareKeyboardController.current
+    val focus = LocalFocusManager.current
     Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).imePadding()) {
         SearchHeader(actions.close)
         SearchQueryBar(model, navigation)
-        if (navigation.submitted.isBlank()) SearchSuggestions(model, navigation, Modifier.weight(1f))
-        else {
-            SearchKinds(model, navigation)
-            SearchResultFeed(model, navigation, actions, Modifier.weight(1f))
-            MiniPlayer(model, actions.openPlayer, actions.queue)
-            Spacer(Modifier.height(8.dp))
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            SearchPageContent(model, navigation, actions)
+            if (suggestions.isNotEmpty()) KeywordSuggestionPanel(suggestions) { suggestion ->
+                // 选中联想词复用现有搜索、分类和历史记录流程。
+                navigation.submit(model, suggestion.keyword)
+                keyboard?.hide()
+                focus.clearFocus()
+            }
         }
+    }
+}
+
+// 搜索结果与推荐内容保持独立，联想面板覆盖其上方而不重建列表。
+@Composable
+private fun SearchPageContent(model: MusicViewModel, navigation: SearchNavigation, actions: SearchActions) {
+    if (navigation.submitted.isBlank()) {
+        SearchSuggestions(model, navigation, Modifier.fillMaxSize()) { entry ->
+            // 选中的真实歌单交给现有目录导航处理。
+            model.online.open(entry)
+            actions.close()
+        }
+        return
+    }
+    Column(Modifier.fillMaxSize()) {
+        SearchKinds(model, navigation)
+        SearchResultFeed(model, navigation, actions, Modifier.weight(1f))
+        MiniPlayer(model, actions.openPlayer, actions.queue)
+        Spacer(Modifier.height(8.dp))
     }
 }
 
@@ -121,9 +159,15 @@ private fun SearchHeader(onClose: () -> Unit) {
 private fun SearchQueryBar(model: MusicViewModel, navigation: SearchNavigation) {
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
     val submit: () -> Unit = {
         if (navigation.query.isBlank()) focus.requestFocus()
-        else { navigation.submit(model); keyboard?.hide() }
+        else {
+            // 提交后收起键盘与联想，重新聚焦时仍可继续编辑。
+            navigation.submit(model)
+            keyboard?.hide()
+            focusManager.clearFocus()
+        }
     }
     Row(Modifier.fillMaxWidth().padding(horizontal = SearchStyle.Inset, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -134,14 +178,15 @@ private fun SearchQueryBar(model: MusicViewModel, navigation: SearchNavigation) 
     }
 }
 
-// 输入框保留真实文本输入和清空功能，不在输入时自动向远端提交未完成内容。
+// 输入变化只触发联想；正式搜索和历史记录仍由提交操作执行。
 @Composable
 private fun SearchInput(navigation: SearchNavigation, focus: FocusRequester, submit: () -> Unit, modifier: Modifier) {
     Row(modifier.heightIn(min = 50.dp).background(KimoColors.Surface, CircleShape).padding(horizontal = 14.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Icon(Icons.Outlined.Search, null, Modifier.size(21.dp), tint = KimoColors.Secondary)
-        BasicTextField(navigation.query, { navigation.query = it }, singleLine = true,
-            modifier = Modifier.weight(1f).focusRequester(focus).semantics { contentDescription = "搜索关键词" },
+        BasicTextField(navigation.query, navigation::edit, singleLine = true,
+            modifier = Modifier.weight(1f).focusRequester(focus).onFocusChanged { navigation.changeFocus(it.isFocused) }
+                .semantics { contentDescription = "搜索关键词" },
             textStyle = TextStyle(color = KimoColors.Ink, fontSize = 15.sp, lineHeight = 22.sp),
             cursorBrush = SolidColor(KimoColors.Orange), keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(onSearch = { submit() }), decorationBox = { field ->

@@ -16,14 +16,19 @@ data class EntryPage(val entries: List<CatalogEntry>, val nextPage: Int?)
 data class LyricLine(val timeMs: Long, val text: String)
 data class StreamAddress(val url: String, val bitrate: Int)
 data class ArtistProfile(val name: String, val avatar: String?, val introduction: String,
-    val followers: Long, val albumCount: Long)
+    val followers: Long?, val albumCount: Long?)
 enum class ArtistOrder(val title: String, val code: String) { Hot("热门单曲", "hot"), New("最新单曲", "new") }
 enum class SearchKind(val title: String, val apiType: String) {
     Song("歌曲", "song"), Playlist("歌单", "special"), Artist("歌手", "author"), Album("专辑", "album")
 }
 data class SearchResult(val tracks: List<Track> = emptyList(), val entries: List<CatalogEntry> = emptyList(), val nextPage: Int? = null)
-data class HotSearch(val keyword: String, val reason: String = "", val track: Track? = null)
-class MusicApiException(message: String, val expired: Boolean = false) : Exception(message)
+data class SearchSuggestion(val keyword: String)
+data class HotSearch(val keyword: String, val reason: String = "")
+const val SERVER_ERROR_MESSAGE = "系统服务器异常请稍后再试"
+class MusicApiException(message: String, val expired: Boolean = false, val retryable: Boolean = false) : Exception(message)
+
+// 只展示应用自己定义的业务提示，未知异常一律转换为简短的服务器提示。
+internal fun Throwable.userMessage(): String = (this as? MusicApiException)?.message ?: SERVER_ERROR_MESSAGE
 
 fun interface CoreTransport {
     // 强类型核心协议允许设备实测与隔离的分页、鉴权回归检查共用同一客户端。
@@ -32,13 +37,23 @@ fun interface CoreTransport {
 
 // 只在协议边界兼容上游命名差异，业务层始终使用对象。
 internal fun JSONObject.text(vararg keys: String): String = keys.firstNotNullOfOrNull { key ->
-    opt(key)?.takeIf { it != JSONObject.NULL }?.toString()?.takeIf { it.isNotBlank() }
+    when (val value = opt(key)) {
+        is String -> value
+        is Number, is Boolean -> value.toString()
+        else -> null
+    }?.takeIf { it.isNotBlank() }
 }.orEmpty()
 
 // 数值字段可能以字符串返回，统一做安全转换。
 internal fun JSONObject.number(vararg keys: String): Long = keys.mapNotNull { key ->
     opt(key)?.toString()?.toDoubleOrNull()?.toLong()
 }.firstOrNull { it != 0L } ?: 0
+
+// 缺失的统计字段保留 null，真实的零值仍然可显示。
+internal fun JSONObject.optionalNumber(vararg keys: String): Long? {
+    val values = keys.mapNotNull { key -> opt(key)?.toString()?.toLongOrNull() }
+    return values.firstOrNull { it != 0L } ?: values.firstOrNull()
+}
 
 // 从多个合法字段中找到列表；字段不存在时返回空列表。
 internal fun JSONObject.rows(vararg keys: String): List<JSONObject> {
@@ -49,18 +64,15 @@ internal fun JSONObject.rows(vararg keys: String): List<JSONObject> {
 // JSON 数组只在反序列化阶段展开，不向界面透传无类型数据。
 internal fun JSONArray.objects(): List<JSONObject> = (0 until length()).mapNotNull(::optJSONObject)
 
-// 保留原始响应的错误含义，不将登录失败或网络错误误判成空曲库。
+// 不暴露上游异常对象或堆栈；明确的登录失效仍保留重新登录提示。
 internal fun JSONObject.requireSuccess(): JSONObject {
-    if (length() == 0) throw MusicApiException("音乐接口未返回有效响应，请重试")
+    if (length() == 0) throw MusicApiException(SERVER_ERROR_MESSAGE, retryable = true)
     val code = number("error_code", "errcode")
     val status = number("status")
     val lyricSuccess = status == 200L && code == 200L
     if (code == 20017L || code == 20018L) throw MusicApiException("登录已失效，请重新登录", true)
     if ((code != 0L && !lyricSuccess) || (has("status") && status !in listOf(1L, 200L))) {
-        val message = text("error", "errmsg", "error_msg", "msg").ifBlank {
-            optString("data").takeIf { opt("data") is String }.orEmpty().ifBlank { "接口请求失败（$code）" }
-        }
-        throw MusicApiException(message)
+        throw MusicApiException(SERVER_ERROR_MESSAGE, retryable = true)
     }
     return this
 }

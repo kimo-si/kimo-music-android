@@ -1,10 +1,25 @@
 package com.kimo.music.core
 
-import com.kimo.music.R
 import com.kimo.music.data.Track
 import org.json.JSONObject
+import java.util.Locale
+
+private val HotSearchSeparators = Regex("[\\s·•—-]+")
 
 object KugouMapper {
+    // 热词保留搜索行为，封面仅来自标题或歌手标题完整匹配的真实歌曲。
+    fun hotSearchTrack(term: HotSearch, tracks: List<Track>): Track? {
+        val keyword = normalizedSearchLabel(term.keyword)
+        if (keyword.isBlank()) return null
+        return tracks.firstOrNull { track ->
+            listOf(track.title, "${track.artist} ${track.title}", "${track.title} ${track.artist}")
+                .any { normalizedSearchLabel(it) == keyword }
+        }
+    }
+
+    // 忽略空格、大小写与连接符，不删除版本括号以免将翻唱或现场版误配。
+    private fun normalizedSearchLabel(value: String): String = value.lowercase(Locale.ROOT).replace(HotSearchSeparators, "")
+
     // 兼容搜索、榜单、歌单与云收藏的嵌套字段，优先使用标准音频 hash。
     fun track(value: JSONObject): Track? {
         val audio = value.optJSONObject("audio_info") ?: value.optJSONObject("deprecated") ?: JSONObject()
@@ -12,14 +27,13 @@ object KugouMapper {
         val hash = value.text("hash", "FileHash").ifBlank { audio.text("hash_128", "hash_320", "hash") }
         if (hash.isBlank()) return null
         val rawTitle = value.text("songname", "audio_name", "FileName", "filename", "name", "ori_audio_name")
-        val artist = artistName(value).takeIf { it != "未知歌手" }
-            ?: rawTitle.substringBefore(" - ", "未知歌手")
+        val artist = artistName(value).ifBlank { rawTitle.substringBefore(" - ", "") }
         val duration = value.number("time_length", "timelength", "timelen", "Duration", "duration_128")
             .takeIf { it > 0 } ?: audio.number("duration_128", "duration_320", "duration")
         return Track(id = hash.lowercase(), hash = hash, title = cleanTitle(rawTitle, artist), artist = artist,
             album = value.text("album_name", "AlbumName").ifBlank { album.text("name", "albumname", "album_name") },
             mediaUri = "", durationMs = if (duration > 10_000) duration else duration * 1000,
-            artwork = R.drawable.sunset_coast, albumId = value.number("album_id", "AlbumID"),
+            albumId = value.number("album_id", "AlbumID"),
             mixSongId = value.number("album_audio_id", "mixsongid", "MixSongID"),
             coverUrl = cover(value, album), cloudFileId = value.number("fileid", "file_id"),
             favoriteAddedAtMs = favoriteTime(value))
@@ -33,8 +47,8 @@ object KugouMapper {
 
     // 艺人数组与文本字段统一为可读歌手名。
     private fun artistName(value: JSONObject): String = value.text("author_name", "singername", "SingerName")
-        .ifBlank { value.rows("singerinfo", "authors").joinToString("、") { it.text("author_name", "name") } }
-        .ifBlank { "未知歌手" }
+        .ifBlank { value.rows("singerinfo", "authors").map { it.text("author_name", "name") }
+            .filter(String::isNotBlank).joinToString("、") }
 
     // 云歌单的文件名移除扩展名与重复歌手前缀。
     private fun cleanTitle(raw: String, artist: String): String {

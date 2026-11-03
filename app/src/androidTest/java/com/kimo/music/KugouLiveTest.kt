@@ -15,12 +15,19 @@ class KugouLiveTest {
     private val core = EmbeddedCore.get(context)
     private val api = KugouApi(core) { null }
 
-    // 热搜来自真实接口，首屏使用对应歌曲的真实图片，不伪造参考图中的排名。
-    @Test fun hotSearchesKeepRealKeywordsAndArtwork() = runBlocking {
+    // 热搜只来自真实接口，不使用搜索结果猜测关联歌曲或封面。
+    @Test fun hotSearchesKeepRealKeywords() = runBlocking {
         val terms = api.hotSearches()
         assertTrue("应读取实时热搜列表", terms.size >= 4)
         assertEquals(terms.size, terms.map(HotSearch::keyword).distinct().size)
-        assertTrue("热搜封面应来自真实歌曲", terms.take(4).any { it.track?.coverUrl?.startsWith("http") == true })
+    }
+
+    // 在设备上通过嵌入式核心验证联想协议与实际返回的关键词。
+    @Test fun searchSuggestionsUseTheEmbeddedCore() = runBlocking {
+        val suggestions = api.searchSuggestions("周杰伦")
+        assertTrue("应返回真实搜索建议", suggestions.isNotEmpty())
+        assertTrue("建议数量不能超过首屏上限", suggestions.size <= 6)
+        assertEquals(suggestions.size, suggestions.map(SearchSuggestion::keyword).distinct().size)
     }
 
     // 两首不同专辑的歌曲缺少列表图片时，也能补取各自真实封面。

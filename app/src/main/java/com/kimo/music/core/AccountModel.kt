@@ -56,7 +56,7 @@ class AccountModel(context: Context, private val scope: CoroutineScope) {
             refreshProfile(current)
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (error: Exception) {
-            if (current == sessionGeneration) state = state.copy(verified = false, error = error.message ?: "无法验证登录状态")
+            if (current == sessionGeneration) state = state.copy(verified = false, error = error.userMessage())
         }
     }
 
@@ -71,7 +71,7 @@ class AccountModel(context: Context, private val scope: CoroutineScope) {
                     if (pollQr(key, current)) return@launch
                 } catch (cancelled: CancellationException) { throw cancelled }
                 catch (error: Exception) {
-                    state = state.copy(qrPhase = QrPhase.Failed, error = error.message ?: "二维码生成失败")
+                    state = state.copy(qrPhase = QrPhase.Failed, qrBase64 = null, error = error.userMessage())
                     return@launch
                 }
             }
@@ -93,9 +93,8 @@ class AccountModel(context: Context, private val scope: CoroutineScope) {
         val started = android.os.SystemClock.elapsedRealtime()
         while (current == generation && android.os.SystemClock.elapsedRealtime() - started < QR_LIFETIME_MS) {
             delay(QR_POLL_MS)
-            val response = try { data(api.request("login_qr_check", JSONObject().put("key", key).put("timestamp", System.currentTimeMillis()))) }
-                catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) { continue }
+            // 接口层已完成有限重试；仍失败时交给外层显示统一提示并允许刷新二维码。
+            val response = data(api.request("login_qr_check", JSONObject().put("key", key).put("timestamp", System.currentTimeMillis())))
             when (response.number("status")) {
                 0L -> return false
                 2L -> state = state.copy(qrPhase = QrPhase.Scanned)
@@ -116,7 +115,7 @@ class AccountModel(context: Context, private val scope: CoroutineScope) {
                 api.request("captcha_sent", JSONObject().put("mobile", phone))
                 startCountdown()
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (error: Exception) { state = state.copy(error = error.message ?: "验证码发送失败") }
+            catch (error: Exception) { state = state.copy(error = error.userMessage()) }
             finally { state = state.copy(sending = false) }
         }
     }
@@ -131,7 +130,7 @@ class AccountModel(context: Context, private val scope: CoroutineScope) {
             state = state.copy(submitting = true, error = null)
             try { authorize(data(api.request("login_cellphone", JSONObject().put("mobile", phone).put("code", code)))) }
             catch (cancelled: CancellationException) { throw cancelled }
-            catch (error: Exception) { state = state.copy(error = error.message ?: "登录失败") }
+            catch (error: Exception) { state = state.copy(error = error.userMessage()) }
             finally { state = state.copy(submitting = false) }
         }
     }
@@ -142,7 +141,7 @@ class AccountModel(context: Context, private val scope: CoroutineScope) {
         val auth = AuthCredentials(value.text("token"), value.text("userid"), value.text("t1"),
             value.text("vip_token"), value.text("vip_type"), value.text("dfid"))
         require(auth.token.isNotBlank() && auth.userId.isNotBlank()) { "登录返回信息不完整，请重试" }
-        val profile = AccountProfile(auth.userId, value.text("nickname", "username", "nick_name").ifBlank { "酷狗用户" },
+        val profile = AccountProfile(auth.userId, value.text("nickname", "username", "nick_name"),
             KugouMapper.sizedImage(value.text("pic", "avatar", "user_pic")), value.number("vip_type", "vipType") > 0)
         // 会话写入与注销清理使用串行工作线程，防止旧保存覆盖退出操作。
         withContext(storageDispatcher) { vault.save(AccountSession(auth, profile)) }
@@ -159,7 +158,9 @@ class AccountModel(context: Context, private val scope: CoroutineScope) {
             catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { return }
         if (currentGeneration != sessionGeneration) return
-        val profile = current.copy(nickname = details.text("nickname", "username").ifBlank { current.nickname },
+        val nickname = details.text("nickname", "username")
+        val profile = current.copy(nickname = nickname.ifBlank { current.nickname },
+            nicknameVerified = nickname.isNotBlank() || current.nicknameVerified,
             avatar = KugouMapper.sizedImage(details.text("pic", "avatar", "user_pic")) ?: current.avatar,
             vip = details.number("vip_type", "vipType") > 0)
         state = state.copy(profile = profile)

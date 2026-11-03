@@ -3,6 +3,7 @@ package com.kimo.music.ui
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Explore
@@ -15,8 +16,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.kimo.music.data.Track
 import com.kimo.music.data.online
 import com.kimo.music.playback.MusicViewModel
@@ -63,26 +66,35 @@ fun KimoApp(model: MusicViewModel) {
     val onImport = rememberAudioImporter(model)
     val onExport = rememberAudioExporter(model)
     val snackbar = remember { SnackbarHostState() }
-    val selection = remember { SongFlightState() }
+    val selection = remember(model) { SongFlightState(model::beginSongSelection) }
+    // 媒体会话失去当前歌曲时，关闭可能仍处于展开状态的播放页。
+    LaunchedEffect(model.playback.track) {
+        if (model.playback.track == null) {
+            navigation.expanded = false
+            if (navigation.overlay in setOf(Overlay.Notes, Overlay.More, Overlay.AddToPlaylist)) navigation.dismiss()
+        }
+    }
     BackHandler(motion.visible && navigation.overlay == null) { navigation.expanded = false }
     BackHandler(!motion.visible && model.online.detail != null && navigation.overlay == null) { model.online.closeDetail() }
     BackHandler(navigation.overlay == Overlay.Search) { navigation.dismiss() }
     ConsumeMessages(model, snackbar)
-    CompositionLocalProvider(LocalSongFlight provides selection) {
+    CompositionLocalProvider(LocalSongFlight provides selection, LocalTrackMemberships provides model.online.memberships) {
         // 完整播放页打开时停止向不可见的迷你封面发送落点反馈。
         SideEffect { selection.setEnabled(!motion.visible && navigation.overlay != Overlay.Search) }
-        AppSurface(model, navigation, snackbar, onImport, motion)
-        AppOverlay(navigation.overlay, model, navigation::dismiss, navigation::show, onExport)
-        if (model.loginRequested) AccountDialog(model) { model.loginRequested = false }
+        KimoTipProvider(snackbar) {
+            AppSurface(model, navigation, onImport, motion)
+            AppOverlay(navigation.overlay, model, navigation::dismiss, navigation::show, onExport)
+            if (model.loginRequested) AccountDialog(model) { model.loginRequested = false }
+        }
     }
 }
 
 // 播放页叠加在稳定的浏览页面上，进入和退出时不切换 Scaffold 或安全区域。
 @Composable
-private fun AppSurface(model: MusicViewModel, navigation: AppNavigation, snackbar: SnackbarHostState,
+private fun AppSurface(model: MusicViewModel, navigation: AppNavigation,
                        onImport: () -> Unit, motion: PlayerMotion) {
     Box(Modifier.fillMaxSize()) {
-        AppScaffold(model, navigation, snackbar, onImport, motion)
+        AppScaffold(model, navigation, onImport, motion)
         if (navigation.overlay == Overlay.Search) SearchScreen(model, navigation::dismiss,
             { track, queue -> navigation.play(model, track, queue) }, {
                 navigation.dismiss(); navigation.expanded = true
@@ -92,20 +104,17 @@ private fun AppSurface(model: MusicViewModel, navigation: AppNavigation, snackba
                 { navigation.show(Overlay.Notes) }, { navigation.show(Overlay.More) }, systemBarsActive)
         }
         SongFlightLayer()
-        // 沉浸页覆盖浏览外壳后，播放失败或收藏反馈仍需显示在最上层。
-        if (motion.visible || navigation.overlay == Overlay.Search) SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter)
-            .windowInsetsPadding(WindowInsets.safeDrawing).padding(horizontal = 16.dp, vertical = 12.dp))
     }
 }
 
 // 根外壳为内容、安全区域与固定播放条分配空间。
 @Composable
-private fun AppScaffold(model: MusicViewModel, navigation: AppNavigation, snackbar: SnackbarHostState,
+private fun AppScaffold(model: MusicViewModel, navigation: AppNavigation,
                         onImport: () -> Unit, motion: PlayerMotion) {
     val searching = navigation.overlay == Overlay.Search
     Scaffold(modifier = Modifier.fillMaxSize().playerBrowseSurface(motion, searching), containerColor = KimoColors.Paper,
         contentWindowInsets = WindowInsets.safeDrawing,
-        snackbarHost = { if (!motion.visible && !searching) SnackbarHost(snackbar) }, bottomBar = {
+        bottomBar = {
             AppBottomBar(model, navigation.destination, { navigation.navigate(model, it) },
                 { navigation.expanded = true }, { navigation.show(Overlay.Queue) }, motion::updateOrigin)
         }) { padding ->
@@ -145,8 +154,11 @@ private fun rememberAudioExporter(model: MusicViewModel): () -> Unit {
         if (uri != null && track != null) model.exportAudio(track, uri)
         pending = null
     }
-    return { pending = model.playback.track; launcher.launch(if (model.playback.track.online)
-        "${model.playback.track.title}.audio" else model.playback.track.fileName) }
+    return action@{
+        val track = model.playback.track ?: return@action
+        pending = track
+        launcher.launch(if (track.online) "${track.title}.audio" else track.fileName)
+    }
 }
 
 // 按一次性事件显示播放、导入和保存反馈。
@@ -154,7 +166,7 @@ private fun rememberAudioExporter(model: MusicViewModel): () -> Unit {
 private fun ConsumeMessages(model: MusicViewModel, snackbar: SnackbarHostState) {
     LaunchedEffect(model.message) {
         val message = model.message ?: return@LaunchedEffect
-        snackbar.showSnackbar(message)
+        snackbar.showSnackbar(message, withDismissAction = true)
         model.clearMessage()
     }
 }
@@ -175,24 +187,29 @@ private fun MainScreen(destination: Destination, model: MusicViewModel, onImport
 @Composable
 private fun AppBottomBar(model: MusicViewModel, selected: Destination, onNavigate: (Destination) -> Unit,
                          onExpand: () -> Unit, onQueue: () -> Unit, onBoundsChanged: (androidx.compose.ui.geometry.Rect) -> Unit) {
-    val navigationHeight = with(LocalDensity.current) {
-        (KimoLayout.BottomNavigationHeight - KimoLayout.BottomNavigationReductionPx.toDp()).coerceAtLeast(KimoLayout.TouchTarget)
-    }
     Column(Modifier.navigationBarsPadding()) {
         MiniPlayer(model, onExpand, onQueue, showProgress = selected == Destination.Library, onBoundsChanged = onBoundsChanged)
-        NavigationBar(modifier = Modifier.height(navigationHeight), containerColor = KimoColors.Paper, windowInsets = WindowInsets(0, 0, 0, 0)) {
+        Row(Modifier.fillMaxWidth().height(KimoLayout.BottomNavigationHeight).testTag("bottom-navigation")) {
             Destination.entries.forEach { destination ->
-                NavigationBarItem(selected == destination, { onNavigate(destination) },
-                    icon = { Icon(when (destination) {
-                        Destination.Home -> if (selected == destination) Icons.Rounded.Home else Icons.Outlined.Home
-                        Destination.Discover -> Icons.Outlined.Explore
-                        Destination.Library -> Icons.Outlined.PersonOutline
-                    }, null) }, label = { Text(destination.title) },
-                    colors = NavigationBarItemDefaults.colors(selectedIconColor = KimoColors.Orange,
-                        selectedTextColor = KimoColors.Orange, indicatorColor = KimoColors.Paper,
-                        unselectedIconColor = KimoColors.Secondary, unselectedTextColor = KimoColors.Secondary))
+                BottomNavigationItem(destination, selected == destination, Modifier.weight(1f)) { onNavigate(destination) }
             }
         }
+    }
+}
+
+// 缩小图标与导航栏高度，同时保留整列可点击的无障碍触控区域。
+@Composable
+private fun BottomNavigationItem(destination: Destination, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    val tint = if (selected) KimoColors.Orange else KimoColors.Secondary
+    Column(modifier.fillMaxHeight().selectable(selected, role = Role.Tab, onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Icon(when (destination) {
+            Destination.Home -> if (selected) Icons.Rounded.Home else Icons.Outlined.Home
+            Destination.Discover -> Icons.Outlined.Explore
+            Destination.Library -> Icons.Outlined.PersonOutline
+        }, null, Modifier.size(KimoLayout.BottomNavigationIconSize).testTag("bottom-nav-icon-${destination.name}"), tint = tint)
+        Spacer(Modifier.height(3.dp))
+        Text(destination.title, color = tint, fontSize = 11.sp, lineHeight = 14.sp, maxLines = 1)
     }
 }
 
@@ -204,9 +221,7 @@ private fun AppOverlay(overlay: Overlay?, model: MusicViewModel, onDismiss: () -
         Overlay.Queue -> QueueSheet(model, onDismiss)
         Overlay.Search -> Unit
         Overlay.Volume -> VolumeDialog(model, onDismiss)
-        Overlay.Notes -> if (model.playback.track.online || model.playback.track.local) LyricsSheet(model, onDismiss) else AlertDialog(onDismissRequest = onDismiss, title = { Text("聆听手记") },
-            text = { Text("让晚风，替我慢慢说。\n把今天留在日落以后。\n\n内置曲目为原创合成纯音乐，没有人声歌词。") },
-            confirmButton = { TextButton(onDismiss) { Text("继续聆听") } })
+        Overlay.Notes -> if (model.playback.track != null) LyricsSheet(model, onDismiss)
         Overlay.More -> PlayerOptionsDialog(model, onDismiss, PlayerMenuActions(
             quality = { onChange(Overlay.Quality) }, playlist = { onChange(Overlay.AddToPlaylist) },
             lyrics = { onChange(Overlay.Notes) }, volume = { onChange(Overlay.Volume) },

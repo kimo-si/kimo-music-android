@@ -1,6 +1,5 @@
 package com.kimo.music.ui
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -11,6 +10,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.MoreHoriz
+import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -19,13 +19,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
-import com.kimo.music.R
 import com.kimo.music.core.*
 import com.kimo.music.data.Track
 import com.kimo.music.playback.MusicViewModel
@@ -35,9 +33,10 @@ import com.kimo.music.ui.theme.KimoLayout
 // 目录封面保留原始比例裁切，网络失败时提供安静的本地占位。
 @Composable
 fun CatalogArtwork(entry: CatalogEntry, modifier: Modifier) {
-    AsyncImage(entry.coverUrl, null, modifier.clip(RoundedCornerShape(12.dp)),
-        placeholder = painterResource(R.drawable.sunset_coast), error = painterResource(R.drawable.sunset_coast),
-        contentScale = ContentScale.Crop)
+    Box(modifier.clip(RoundedCornerShape(12.dp)).background(KimoColors.Surface), contentAlignment = Alignment.Center) {
+        Icon(Icons.Outlined.MusicNote, null, Modifier.size(24.dp), tint = KimoColors.Secondary)
+        if (entry.coverUrl != null) AsyncImage(entry.coverUrl, null, Modifier.matchParentSize(), contentScale = ContentScale.Crop)
+    }
 }
 
 // 在线歌单卡片与参考图共用底部遮罩和左对齐标题。
@@ -117,7 +116,8 @@ fun CatalogDetailScreen(detail: CatalogDetail, model: MusicViewModel, onClose: (
 private fun ArtistInformation(detail: CatalogDetail, model: MusicViewModel) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         detail.profile?.state?.items?.firstOrNull()?.let { profile ->
-            Text("${profile.followers} 位关注者 · ${profile.albumCount} 张专辑", color = KimoColors.Secondary, fontSize = 12.sp)
+            val stats = listOfNotNull(profile.followers?.let { "$it 位关注者" }, profile.albumCount?.let { "$it 张专辑" })
+            if (stats.isNotEmpty()) Text(stats.joinToString(" · "), color = KimoColors.Secondary, fontSize = 12.sp)
             if (profile.introduction.isNotBlank()) Text(profile.introduction, fontSize = 13.sp, lineHeight = 21.sp)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

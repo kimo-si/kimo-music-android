@@ -1,6 +1,5 @@
 package com.kimo.music.data
 
-import com.kimo.music.R
 import org.json.JSONObject
 
 // 各持久化容器共享同一歌曲编码，账号收藏与历史不会丢失播放或删除所需标识。
@@ -13,6 +12,7 @@ object TrackStorage {
         put("mixSongId", track.mixSongId); put("coverUrl", track.coverUrl); put("cloudFileId", track.cloudFileId)
         put("cloudDrive", track.cloudDrive)
         put("favoriteAddedAtMs", track.favoriteAddedAtMs)
+        put("metadataVerified", track.metadataVerified)
     }
 
     // 兼容早期本地库记录，在线曲目始终保留 hash、mixsongid 与云端 fileid。
@@ -20,11 +20,10 @@ object TrackStorage {
         val local = value.optBoolean("local", !value.has("hash"))
         return Track(id = value.getString("id"), title = value.getString("title"), artist = value.getString("artist"),
             album = value.optString("album"), mediaUri = value.optString("uri"), durationMs = value.optLong("duration"),
-            artwork = if (local) ListeningMood.Slow.artwork else R.drawable.sunset_coast,
             fileName = value.optString("fileName"), local = local, hash = value.optString("hash"),
             albumId = value.optLong("albumId"), mixSongId = value.optLong("mixSongId"),
             coverUrl = value.optString("coverUrl").takeIf { it.isNotBlank() && it != "null" },
             cloudFileId = value.optLong("cloudFileId"), cloudDrive = value.optBoolean("cloudDrive"),
-            favoriteAddedAtMs = value.optLong("favoriteAddedAtMs"))
+            favoriteAddedAtMs = value.optLong("favoriteAddedAtMs"), metadataVerified = value.optBoolean("metadataVerified", false))
     }
 }

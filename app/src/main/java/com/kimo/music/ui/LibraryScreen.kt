@@ -19,6 +19,7 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,7 +43,6 @@ import androidx.core.view.WindowCompat
 import coil3.compose.AsyncImage
 import com.kimo.music.R
 import com.kimo.music.core.*
-import com.kimo.music.data.DemoCatalog
 import com.kimo.music.data.Track
 import com.kimo.music.data.online
 import com.kimo.music.playback.MusicViewModel
@@ -74,16 +74,21 @@ fun DiscoverScreen(model: MusicViewModel, onPlay: (Track, List<Track>) -> Unit) 
 }
 
 private enum class LibraryTab(val title: String) {
-    Favorites("喜欢的歌曲"), Playlists("云歌单"), Local("本地音乐"), Recent("最近播放"), Demo("离线演示")
+    Favorites("喜欢的歌曲"), Playlists("云歌单"), Local("本地音乐"), Recent("最近播放")
 }
 private enum class LibraryOverlay { Settings, CreatePlaylist, TrackActions }
+// 设置页需要跨配置恢复，歌曲操作仍只保留当前界面的临时选中对象。
+private val SettingsOverlaySaver = Saver<MutableState<LibraryOverlay?>, Boolean>(
+    save = { it.value == LibraryOverlay.Settings },
+    restore = { mutableStateOf(if (it) LibraryOverlay.Settings else null) },
+)
 private object LibraryPalette {
-    val Peach = Color(0xFFF0D1BA)
-    val PeachLight = Color(0xFFF8E2D2)
-    val Cloud = Color(0xFFF8E3D5)
-    val Drive = Color(0xFFEAE7D8)
-    val Local = Color(0xFFE4E8D9)
-    val Recent = Color(0xFFEFDFD3)
+    val Peach: Color @Composable get() = if (KimoColors.IsDark) Color(0xFF493426) else Color(0xFFF0D1BA)
+    val PeachLight: Color @Composable get() = if (KimoColors.IsDark) Color(0xFF352D25) else Color(0xFFF8E2D2)
+    val Cloud: Color @Composable get() = if (KimoColors.IsDark) Color(0xFF403127) else Color(0xFFF8E3D5)
+    val Drive: Color @Composable get() = if (KimoColors.IsDark) Color(0xFF34372C) else Color(0xFFEAE7D8)
+    val Local: Color @Composable get() = if (KimoColors.IsDark) Color(0xFF2F3A30) else Color(0xFFE4E8D9)
+    val Recent: Color @Composable get() = if (KimoColors.IsDark) Color(0xFF3E332C) else Color(0xFFEFDFD3)
 }
 data class LibraryActions(val importAudio: () -> Unit, val play: (Track, List<Track>) -> Unit,
     val search: () -> Unit, val queue: () -> Unit, val quality: () -> Unit)
@@ -101,11 +106,11 @@ private class LibraryNavigation(tabState: MutableState<LibraryTab>, overlayState
     fun dismiss() { overlay = null; selectedTrack = null }
 }
 
-// 栏目可在旋转与返回页面后恢复，弹层只保留当前界面的临时状态。
+// 栏目和设置在配置变化后恢复，歌曲操作只保留当前界面的临时状态。
 @Composable
 private fun rememberLibraryNavigation(): LibraryNavigation {
     val tab = rememberSaveable { mutableStateOf(LibraryTab.Favorites) }
-    val overlay = remember { mutableStateOf<LibraryOverlay?>(null) }
+    val overlay = rememberSaveable(saver = SettingsOverlaySaver) { mutableStateOf<LibraryOverlay?>(null) }
     val track = remember { mutableStateOf<Track?>(null) }
     return remember { LibraryNavigation(tab, overlay, track) }
 }
@@ -133,7 +138,7 @@ private fun LazyListScope.libraryHeaderItems(model: MusicViewModel, navigation: 
                                              actions: LibraryActions, favorites: List<Track>) {
     item { LibraryHeader(actions.search) { navigation.overlay = LibraryOverlay.Settings } }
     item { AccountSummary(model) }
-    item { FavoritesCard(favorites, { navigation.tab = LibraryTab.Favorites }) {
+    item { FavoritesCard(favorites, model.account.credentials == null || model.online.cloud.loaded, { navigation.tab = LibraryTab.Favorites }) {
         favorites.firstOrNull()?.let { actions.play(it, favorites) }
     } }
     item { LibraryShortcuts(navigation.tab, { navigation.tab = it }) { model.notice("音乐云盘暂未开放") } }
@@ -154,7 +159,6 @@ private fun LibraryTab.selectedTracks(model: MusicViewModel): List<Track> = when
     LibraryTab.Favorites -> model.favoriteTracks
     LibraryTab.Local -> model.localTracks
     LibraryTab.Recent -> model.recentTracks
-    LibraryTab.Demo -> DemoCatalog.tracks
     else -> emptyList()
 }.distinctBy(Track::id)
 
@@ -174,35 +178,31 @@ private fun AccountSummary(model: MusicViewModel) {
     val profile = model.account.state.profile
     Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
         Row(Modifier.weight(1f).clickable(role = Role.Button) { model.loginRequested = true }
-            .semantics { contentDescription = "账号与同步" }, verticalAlignment = Alignment.CenterVertically) {
-            AsyncImage(profile?.avatar, null, Modifier.size(48.dp).clip(CircleShape),
-                placeholder = painterResource(R.drawable.sunset_coast), error = painterResource(R.drawable.sunset_coast),
-                contentScale = ContentScale.Crop)
+            .semantics { contentDescription = "账号信息" }, verticalAlignment = Alignment.CenterVertically) {
+            AccountAvatar(profile?.avatar, Modifier.size(48.dp))
             Column(Modifier.padding(start = 12.dp).weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(profile?.nickname ?: "登录酷狗", fontSize = 18.sp, fontWeight = FontWeight.SemiBold,
+                Text(profile?.displayNickname?.takeIf(String::isNotBlank) ?: if (profile == null) "登录酷狗" else "账号信息",
+                    fontSize = 18.sp, fontWeight = FontWeight.SemiBold,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("账号与同步", fontSize = 12.sp, color = KimoColors.Secondary)
+                    Text("查看账号", fontSize = 12.sp, color = KimoColors.Secondary)
                     Icon(Icons.Outlined.ChevronRight, null, Modifier.size(16.dp), tint = KimoColors.Secondary)
                 }
             }
         }
-        LibrarySyncButton(model, prominent = true)
     }
 }
 
 // 同步按钮只发送现有同步请求，未登录时引导授权，加载期间避免重复请求。
 @Composable
-private fun LibrarySyncButton(model: MusicViewModel, prominent: Boolean = false) {
+private fun LibrarySyncButton(model: MusicViewModel) {
     val loading = model.online.cloud.loading
     TextButton({ requestLibrarySync(model) }, Modifier.height(36.dp), enabled = !loading,
         contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)) {
         if (loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-        else Icon(if (prominent) Icons.Outlined.CloudSync else Icons.Outlined.Sync, null, Modifier.size(21.dp),
-            tint = if (prominent) KimoColors.Orange else KimoColors.Secondary)
+        else Icon(Icons.Outlined.Sync, null, Modifier.size(21.dp), tint = KimoColors.Secondary)
         Spacer(Modifier.width(5.dp))
-        Text(if (loading) "同步中" else if (prominent) "立即同步" else "同步", fontSize = 12.sp, lineHeight = 18.sp,
-            color = if (prominent) KimoColors.Orange else KimoColors.Secondary)
+        Text(if (loading) "同步中" else "同步", fontSize = 12.sp, lineHeight = 18.sp, color = KimoColors.Secondary)
     }
 }
 
@@ -213,13 +213,13 @@ private fun requestLibrarySync(model: MusicViewModel) {
 
 // 桃色收藏主卡以真实数量和首曲封面呈现，播放入口与查看收藏分开处理。
 @Composable
-private fun FavoritesCard(tracks: List<Track>, onOpen: () -> Unit, onPlay: () -> Unit) {
+private fun FavoritesCard(tracks: List<Track>, countKnown: Boolean, onOpen: () -> Unit, onPlay: () -> Unit) {
     BoxWithConstraints(Modifier.fillMaxWidth().clip(RoundedCornerShape(19.dp))
         .background(Brush.linearGradient(listOf(LibraryPalette.PeachLight, LibraryPalette.Peach)))
         .clickable(role = Role.Button, onClick = onOpen).semantics { contentDescription = "查看我喜欢" }) {
         val artworkWidth = if (maxWidth < 340.dp) 124.dp else 144.dp
         Row(Modifier.fillMaxWidth().heightIn(min = 124.dp).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            FavoriteCaption(tracks.size, Modifier.weight(1f))
+            FavoriteCaption(tracks.size.takeIf { countKnown }, Modifier.weight(1f))
             Box(Modifier.width(artworkWidth).height(100.dp)) {
                 CollectionRecordArtwork(tracks.firstOrNull(), Modifier.fillMaxSize().padding(end = 12.dp))
                 IconButton(onPlay, Modifier.align(Alignment.BottomEnd).size(42.dp)
@@ -233,7 +233,7 @@ private fun FavoritesCard(tracks: List<Track>, onOpen: () -> Unit, onPlay: () ->
 
 // 收藏文案只描述当前集合，空库仍保留真实零计数。
 @Composable
-private fun FavoriteCaption(count: Int, modifier: Modifier) {
+private fun FavoriteCaption(count: Int?, modifier: Modifier) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(7.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
             Icon(Icons.Outlined.Favorite, null, Modifier.size(27.dp).background(KimoColors.Orange.copy(alpha = 0.1f),
@@ -241,7 +241,7 @@ private fun FavoriteCaption(count: Int, modifier: Modifier) {
             Text("我喜欢", fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        Text("$count 首珍藏", fontSize = 13.sp, lineHeight = 19.sp, color = KimoColors.Ink.copy(alpha = 0.7f))
+        if (count != null) Text("$count 首珍藏", fontSize = 13.sp, lineHeight = 19.sp, color = KimoColors.Ink.copy(alpha = 0.7f))
         Text("把喜欢的旋律，留在这里", fontSize = 11.sp, lineHeight = 17.sp, color = KimoColors.Secondary, maxLines = 2)
     }
 }
@@ -283,9 +283,12 @@ private fun LibrarySectionHeader(navigation: LibraryNavigation, model: MusicView
             navigation.tab = LibraryTab.Favorites
         }
         Text(navigation.tab.title, fontSize = 20.sp, lineHeight = 28.sp, fontWeight = FontWeight.SemiBold)
-        Text(if (playlists) "${model.online.cloud.playlists.size} 个" else "$trackCount 首",
+        val countKnown = !playlists && navigation.tab != LibraryTab.Favorites ||
+            model.account.credentials == null && !playlists || model.online.cloud.loaded
+        if (countKnown) Text(if (playlists) "${model.online.cloud.playlists.size} 个" else "$trackCount 首",
             Modifier.weight(1f).padding(start = 10.dp), fontSize = 12.sp, lineHeight = 18.sp, color = KimoColors.Secondary)
-        if (navigation.tab in listOf(LibraryTab.Favorites, LibraryTab.Playlists)) LibrarySyncButton(model)
+        else Spacer(Modifier.weight(1f))
+        if (navigation.tab == LibraryTab.Favorites) LibrarySyncButton(model)
     }
 }
 
@@ -321,7 +324,7 @@ private fun LibraryPlayAll(tracks: List<Track>, actions: LibraryActions) {
 // 曲目行使用真实封面和单行元数据，更多按钮只针对该行歌曲。
 @Composable
 private fun LibrarySongRow(track: Track, onPlay: () -> Unit, onMore: () -> Unit) {
-    val selection = rememberSongSelection(onPlay)
+    val selection = rememberSongSelection(track, onPlay)
     Column {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Row(Modifier.weight(1f).clickable(role = Role.Button, onClick = selection.play)
@@ -329,8 +332,9 @@ private fun LibrarySongRow(track: Track, onPlay: () -> Unit, onMore: () -> Unit)
                 verticalAlignment = Alignment.CenterVertically) {
                 TrackArtwork(track, Modifier.size(52.dp).onGloballyPositioned(selection.anchor::update))
                 Column(Modifier.weight(1f).padding(start = 13.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Text(track.title, fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text("${track.artist} · ${track.album}", fontSize = 11.sp, lineHeight = 16.sp,
+                    TrackTitle(track)
+                    val subtitle = listOf(track.displayArtist, track.displayAlbum).filter(String::isNotBlank).joinToString(" · ")
+                    if (subtitle.isNotEmpty()) Text(subtitle, fontSize = 11.sp, lineHeight = 16.sp,
                         color = KimoColors.Secondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
@@ -345,13 +349,11 @@ private fun LibrarySongRow(track: Track, onPlay: () -> Unit, onMore: () -> Unit)
 private fun LibraryStatus(tab: LibraryTab, model: MusicViewModel, empty: Boolean) {
     val cloud = tab in listOf(LibraryTab.Favorites, LibraryTab.Playlists)
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (cloud && model.online.cloud.loading) CircularProgressIndicator(Modifier.size(22.dp))
-        if (cloud && model.online.cloud.fromCache) Text("显示上次同步的曲库，联网后可重新同步。", fontSize = 12.sp, color = KimoColors.Secondary)
         if (cloud) model.online.cloud.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         if (cloud) model.account.state.error?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.error) }
-        if (cloud && model.account.credentials == null) Text("登录后同步酷狗收藏与歌单，本地收藏也会保留。", fontSize = 12.sp, color = KimoColors.Secondary)
-        else if (empty && !model.online.cloud.loading && tab != LibraryTab.Playlists) Text("这里暂时没有歌曲。", color = KimoColors.Secondary)
-        if (tab == LibraryTab.Demo) Text("3 首原创合成演示曲，仅用于离线体验。", fontSize = 12.sp, color = KimoColors.Secondary)
+        if (cloud && model.account.credentials == null) Text("登录酷狗后可查看收藏与歌单。", fontSize = 12.sp, color = KimoColors.Secondary)
+        else if (empty && !model.online.cloud.loading && tab != LibraryTab.Playlists &&
+            (!cloud || model.online.cloud.loaded)) Text("这里暂时没有歌曲。", color = KimoColors.Secondary)
     }
 }
 
@@ -371,17 +373,10 @@ private fun LibraryOverlays(navigation: LibraryNavigation, model: MusicViewModel
     }
 }
 
-// 设置入口连接账号、音质、本地导入和既有离线演示，避免新增无效按钮。
+// 设置作为独立页面展示，关闭后保留个人页原有栏目与滚动位置。
 @Composable
 private fun LibrarySettingsDialog(navigation: LibraryNavigation, model: MusicViewModel, actions: LibraryActions) {
-    AlertDialog(onDismissRequest = navigation::dismiss, title = { Text("音乐设置") }, text = {
-        Column {
-            TextButton({ navigation.dismiss(); model.loginRequested = true }) { Text("账号与同步") }
-            TextButton({ navigation.dismiss(); actions.quality() }) { Text("在线音质 · ${model.quality.title}") }
-            TextButton({ navigation.dismiss(); actions.importAudio() }) { Text("导入本地音频") }
-            TextButton({ navigation.dismiss(); navigation.tab = LibraryTab.Demo }) { Text("离线演示") }
-        }
-    }, confirmButton = { TextButton(navigation::dismiss) { Text("完成") } })
+    SettingsScreen(model, navigation::dismiss, actions)
 }
 
 // 底部操作面板展示真实封面和来源，继续调用原有播放、入队与收藏能力。
@@ -392,7 +387,8 @@ private fun LibraryTrackSheet(track: Track, tab: LibraryTab, model: MusicViewMod
     val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(onDismiss, sheetState = sheet, containerColor = KimoColors.Paper,
         scrimColor = Color.Black.copy(alpha = 0.6f), shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp)) {
-        LibrarySheetNavigationBar()
+        KimoTipWindow()
+        ThemedSheetNavigationBar()
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 12.dp)) {
             LibrarySheetTrackHeader(track, if (tab == LibraryTab.Favorites) "我喜欢" else tab.title)
             HorizontalDivider(Modifier.padding(vertical = 10.dp), thickness = 0.5.dp, color = KimoColors.Rail)
@@ -414,24 +410,29 @@ private fun LibraryTrackSheet(track: Track, tab: LibraryTab, model: MusicViewMod
     }
 }
 
-// 面板的系统导航区域沿用暖米白，关闭后恢复原窗口设置。
+// 弹层跟随当前主题更新系统栏，独立页面还同步状态栏图标。
 @Suppress("DEPRECATION")
 @Composable
-private fun LibrarySheetNavigationBar() {
+internal fun ThemedSheetNavigationBar(includeStatusBar: Boolean = false) {
     val view = LocalView.current
-    DisposableEffect(view) {
+    val paper = KimoColors.Paper.toArgb()
+    val dark = KimoColors.IsDark
+    DisposableEffect(view, paper, dark, includeStatusBar) {
         val window = (view.parent as? DialogWindowProvider)?.window
         val color = window?.navigationBarColor
         val contrast = if (Build.VERSION.SDK_INT >= 29) window?.isNavigationBarContrastEnforced else null
         val controller = window?.let { WindowCompat.getInsetsController(it, view) }
         val appearance = controller?.isAppearanceLightNavigationBars
-        window?.navigationBarColor = KimoColors.Paper.toArgb()
+        val status = controller?.isAppearanceLightStatusBars
+        window?.navigationBarColor = paper
         if (Build.VERSION.SDK_INT >= 29) window?.isNavigationBarContrastEnforced = false
-        controller?.isAppearanceLightNavigationBars = true
+        controller?.isAppearanceLightNavigationBars = !dark
+        if (includeStatusBar) controller?.isAppearanceLightStatusBars = !dark
         onDispose {
             if (color != null) window?.navigationBarColor = color
             if (Build.VERSION.SDK_INT >= 29 && contrast != null) window?.isNavigationBarContrastEnforced = contrast
             if (appearance != null) controller?.isAppearanceLightNavigationBars = appearance
+            if (includeStatusBar && status != null) controller?.isAppearanceLightStatusBars = status
         }
     }
 }
@@ -442,7 +443,7 @@ private fun LibrarySheetTrackHeader(track: Track, source: String) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         TrackArtwork(track, Modifier.size(64.dp))
         Column(Modifier.weight(1f).padding(start = 14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            Text(track.title, fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            TrackTitle(track, fontSize = 17.sp, fontWeight = FontWeight.Bold)
             Text("来自「$source」", color = KimoColors.Secondary, fontSize = 12.sp, maxLines = 1)
         }
     }

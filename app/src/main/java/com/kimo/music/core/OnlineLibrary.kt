@@ -8,17 +8,21 @@ import com.kimo.music.data.Track
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 private data class SearchRequest(val keyword: String, val kind: SearchKind, val page: PageRequest,
     val append: Boolean, val generation: Int)
 private data class FavoriteEdit(val track: Track, val desired: Boolean, val version: Long, val addedAtMs: Long,
     val onResult: (String) -> Unit, val awaitingConfirmation: Boolean? = null)
 private enum class FavoriteResult { Obsolete, Unchanged, Synchronized, AwaitingConfirmation }
+private const val HOT_ARTWORK_CONCURRENCY = 3
 
 data class CatalogDetail(val entry: CatalogEntry, val songs: PagedFeed<Track>, val albums: PagedFeed<CatalogEntry>?,
     val profile: PagedFeed<ArtistProfile>? = null, val order: ArtistOrder = ArtistOrder.Hot)
 data class CloudLibraryState(val playlists: List<CatalogEntry> = emptyList(), val favorites: List<Track> = emptyList(),
-    val loading: Boolean = false, val error: String? = null, val ownerId: String? = null, val fromCache: Boolean = false)
+    val loading: Boolean = false, val error: String? = null, val ownerId: String? = null, val fromCache: Boolean = false,
+    val loaded: Boolean = false)
 
 class OnlineLibrary internal constructor(private val api: KugouApi, private val scope: CoroutineScope,
     private val cache: CloudCache, private val currentOwner: () -> String?, private val sessionFailed: (String) -> Unit) {
@@ -46,9 +50,22 @@ class OnlineLibrary internal constructor(private val api: KugouApi, private val 
     val newSongs = trackFeed { api.newSongs(it) }
     val recommendations = trackFeed { TrackPage(api.recommendations(), null) }
     val hotSearches = PagedFeed(scope, HotSearch::keyword) { FeedPage(api.hotSearches()) }
+    private val hotArtworkCache = mutableMapOf<HotSearch, String?>()
+    private val hotArtworkPermits = Semaphore(HOT_ARTWORK_CONCURRENCY)
     val charts = PagedFeed(scope) { FeedPage(api.charts()) }
     val artists = PagedFeed(scope) { FeedPage(api.artists()) }
     val radios = PagedFeed(scope) { FeedPage(api.radios()) }
+    val memberships = TrackMemberships(api, scope)
+
+    // 可见热词才补图；命中与无匹配结果均缓存，网络失败保留稍后重试机会。
+    suspend fun hotSearchArtwork(term: HotSearch): String? = hotArtworkPermits.withPermit {
+        if (hotArtworkCache.containsKey(term)) return@withPermit hotArtworkCache[term]
+        try {
+            // 限制并发后再访问远端，取消页面请求时不吞掉协程取消信号。
+            api.hotSearchArtwork(term).also { hotArtworkCache[term] = it }
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { null }
+    }
 
     // 歌曲以稳定标识合并，播放器持有的对象不因切换栏目丢失。
     fun register(tracks: List<Track>) { knownTracks = (knownTracks + tracks).distinctBy(Track::id) }
@@ -114,7 +131,7 @@ class OnlineLibrary internal constructor(private val api: KugouApi, private val 
                 register(tracks)
                 if (tracks.isEmpty()) onResult("这个目录还没有可播放的歌曲") else onReady(tracks)
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (error: Exception) { onResult(error.message ?: "完整曲库加载失败") }
+            catch (error: Exception) { onResult(error.userMessage()) }
             finally { loadingAll = false }
         }
     }
@@ -137,7 +154,7 @@ class OnlineLibrary internal constructor(private val api: KugouApi, private val 
             val favorites = favoriteList?.let { api.allTracks(it) }.orEmpty()
             if (currentOwner() != owner) return false
             register(favorites)
-            val synchronized = CloudLibraryState(lists, favorites, ownerId = owner)
+            val synchronized = CloudLibraryState(lists, favorites, ownerId = owner, loaded = true)
             lastSyncedOwner = owner
             cloud = synchronized
             withContext(Dispatchers.IO) { cache.save(synchronized) }
@@ -145,8 +162,8 @@ class OnlineLibrary internal constructor(private val api: KugouApi, private val 
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (error: Exception) {
             if (currentOwner() != owner) return false
-            cloud = cloud.copy(loading = false, error = error.message ?: "账号同步失败")
-            if ((error as? MusicApiException)?.expired == true) sessionFailed(error.message.orEmpty())
+            cloud = cloud.copy(loading = false, error = error.userMessage())
+            if ((error as? MusicApiException)?.expired == true) sessionFailed(error.userMessage())
             return false
         }
     }
@@ -158,7 +175,7 @@ class OnlineLibrary internal constructor(private val api: KugouApi, private val 
     fun toggleFavorite(track: Track, onResult: (String) -> Unit) {
         val owner = currentOwner()
         if (owner == null || cloud.ownerId != owner || cloud.playlists.none { it.kind == CatalogKind.Favorites }) {
-            onResult("请先登录并完成账号同步"); return
+            onResult("请先登录，稍后重试"); return
         }
         val previous = favoriteEdit(track)
         val edit = FavoriteEdit(track, !liked(track), ++favoriteVersion, System.currentTimeMillis(), onResult,
@@ -208,9 +225,9 @@ class OnlineLibrary internal constructor(private val api: KugouApi, private val 
             if (currentOwner() != owner) return
             if (favoriteEdit(edit.track)?.version == edit.version) {
                 removeFavoriteEdit(edit.track)
-                edit.onResult(error.message ?: "收藏同步失败，请重试")
+                edit.onResult(error.userMessage())
             }
-            if ((error as? MusicApiException)?.expired == true) sessionFailed(error.message.orEmpty())
+            if ((error as? MusicApiException)?.expired == true) sessionFailed(error.userMessage())
         }
     }
 
@@ -221,13 +238,21 @@ class OnlineLibrary internal constructor(private val api: KugouApi, private val 
         val stored = cloud.favorites.firstOrNull { matches(it, edit.track) }
         if ((stored != null) == edit.desired) return@withLock FavoriteResult.Unchanged
         val entry = cloud.playlists.firstOrNull { it.kind == CatalogKind.Favorites }
-            ?: throw MusicApiException("请先登录并完成账号同步")
+            ?: throw MusicApiException("请先登录，稍后重试")
         // 将当前选择写入酷狗；成功前不覆盖服务端确认的曲库快照。
         if (edit.desired) api.addTrack(entry, edit.track) else api.removeTrack(entry, requireNotNull(stored))
+        // 写入已确认即可反馈成功，不让完整曲库刷新拖延本次操作的提示。
+        notifyFavoriteCommitted(owner, edit)
         // 获取服务端权威列表及真实 fileid，供下一次取消收藏使用。
         val synced = synchronizeLocked(owner)
         if (synced && cloud.favorites.any { matches(it, edit.track) } == edit.desired)
             FavoriteResult.Synchronized else FavoriteResult.AwaitingConfirmation
+    }
+
+    // 只反馈当前账号仍然有效的最新意图，快速改选时不展示过时操作的成功提示。
+    private fun notifyFavoriteCommitted(owner: String, edit: FavoriteEdit) {
+        if (currentOwner() != owner || favoriteEdit(edit.track)?.version != edit.version) return
+        edit.onResult(if (edit.desired) "已加入我喜欢" else "已取消喜欢")
     }
 
     // 服务端已写入但列表暂未确认时保留界面状态，避免把成功操作误当失败。
@@ -236,10 +261,9 @@ class OnlineLibrary internal constructor(private val api: KugouApi, private val 
         val latest = favoriteEdit(edit.track) ?: return
         if (result == FavoriteResult.AwaitingConfirmation) {
             replaceFavoriteEdit(latest.copy(awaitingConfirmation = edit.desired))
-            latest.onResult("收藏已提交，云端列表待确认，请重新同步")
+            latest.onResult("收藏已提交，列表待确认")
         } else if (latest.version == edit.version) {
             removeFavoriteEdit(edit.track)
-            if (result == FavoriteResult.Synchronized) edit.onResult(if (edit.desired) "已同步加入我喜欢" else "已同步取消喜欢")
         }
         if (result == FavoriteResult.Synchronized) reconcileConfirmedEdits(owner)
     }
@@ -260,7 +284,7 @@ class OnlineLibrary internal constructor(private val api: KugouApi, private val 
         if (syncJob?.isActive == true) return
         syncJob = scope.launch {
             if (!synchronize(owner) && currentOwner() == owner)
-                favoriteEdits.firstOrNull { it.awaitingConfirmation != null }?.onResult("曲库暂时无法同步，请稍后重试")
+                favoriteEdits.firstOrNull { it.awaitingConfirmation != null }?.onResult(SERVER_ERROR_MESSAGE)
         }
     }
 
@@ -296,7 +320,7 @@ class OnlineLibrary internal constructor(private val api: KugouApi, private val 
             search = if (request.append) SearchResult((search.tracks + result.tracks).distinctBy(Track::id),
                 (search.entries + result.entries).distinctBy(CatalogEntry::id), result.nextPage) else result
         } catch (cancelled: CancellationException) { throw cancelled }
-        catch (error: Exception) { if (request.generation == searchGeneration) searchError = error.message ?: "搜索失败" }
+        catch (error: Exception) { if (request.generation == searchGeneration) searchError = error.userMessage() }
         finally { if (request.generation == searchGeneration) searchLoading = false }
     }
 
@@ -311,9 +335,9 @@ class OnlineLibrary internal constructor(private val api: KugouApi, private val 
                     else -> throw MusicApiException("请输入歌单名称")
                 }
                 val synced = currentOwner()?.let { synchronize(it) } == true
-                onResult(if (synced) "歌单已同步" else "歌单已更新，曲库重新读取失败，请重试同步")
+                onResult(if (synced) "歌单已更新" else "歌单已更新，列表暂未刷新")
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (error: Exception) { onResult(error.message ?: "歌单同步失败") }
+            catch (error: Exception) { onResult(error.userMessage()) }
         }
     }
 
@@ -322,7 +346,7 @@ class OnlineLibrary internal constructor(private val api: KugouApi, private val 
         scope.launch {
             try { api.addTrack(entry, track); onResult("已加入${entry.title}"); syncAccount() }
             catch (cancelled: CancellationException) { throw cancelled }
-            catch (error: Exception) { onResult(error.message ?: "添加失败") }
+            catch (error: Exception) { onResult(error.userMessage()) }
         }
     }
 

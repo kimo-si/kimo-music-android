@@ -28,7 +28,7 @@ import com.kimo.music.ui.theme.KimoColors
 import kotlin.math.min
 
 private object SongFlightSpec {
-    const val DurationMs = 560
+    const val DurationMs = 1_060
     const val LandingScale = 0.08f
     val Diameter = 36.dp
     val ArcLift = 88.dp
@@ -37,33 +37,62 @@ private object SongFlightSpec {
 
 internal data class SongFlight(val id: Long, val start: Offset, val end: Offset)
 
-internal class SongFlightState {
+internal class SongFlightState(private val onSelectionStarted: () -> Unit = {}) {
     var flight by mutableStateOf<SongFlight?>(null); private set
     var landing by mutableLongStateOf(0); private set
-    var root: LayoutCoordinates? = null
+    var previewTrack by mutableStateOf<Track?>(null); private set
+    private var root: LayoutCoordinates? = null
     val target = ArtworkAnchor()
+    private var pending: Offset? = null
+    private var onLanded: (() -> Unit)? = null
     private var sequence = 0L
     private var enabled = true
 
-    // 使用屏幕坐标兼容弹窗来源，再换算为当前绘制层的坐标。
-    fun launch(source: Offset) {
+    // 只登记选择和完成回调，动画落点到达前不执行播放操作。
+    fun launch(source: Offset, track: Track, onComplete: () -> Unit) {
+        if (!enabled || !source.isSpecified) { onComplete(); return }
+        // 停止过期播放准备，再用真实选择的歌曲建立首次播放条预览。
+        onSelectionStarted()
+        flight = null
+        previewTrack = track
+        onLanded = onComplete
+        pending = source
+        launchPending()
+    }
+
+    // 首次点歌时目标播放条尚未出现，等真实播放条完成布局后再启动反馈。
+    private fun launchPending() {
+        val source = pending ?: return
         val origin = root?.takeIf { it.isAttached }?.localToScreen(Offset.Zero) ?: return
         val destination = target.center()
-        if (!enabled || !source.isSpecified || !destination.isSpecified) return
+        if (!enabled || !destination.isSpecified) return
+        pending = null
         flight = SongFlight(++sequence, source - origin, destination - origin)
     }
+
+    // 绘制层和迷你封面更新坐标后尝试消费等待中的首次点歌。
+    fun updateRoot(value: LayoutCoordinates) { root = value; launchPending() }
+
+    // 目标坐标只在布局完成时读取，避免在播放条尚不存在时显示假内容。
+    fun updateTarget(value: LayoutCoordinates) { target.update(value); launchPending() }
 
     // 快速连续点歌只保留最新的一枚音符，旧动画不得清除新事件。
     fun complete(id: Long) {
         if (flight?.id != id) return
+        val action = onLanded
         landing++
         flight = null
+        pending = null
+        onLanded = null
+        previewTrack = null
+        // 只有当前音符完成后才触发真正播放，过期音符不会启动旧歌曲。
+        action?.invoke()
     }
 
     // 完整播放页覆盖迷你条时停用反馈，防止飞向不可见的封面。
     fun setEnabled(value: Boolean) {
         enabled = value
-        if (!value) flight = null
+        if (!value) { flight = null; pending = null; onLanded = null; previewTrack = null }
     }
 }
 
@@ -86,13 +115,19 @@ internal class ArtworkAnchor {
 
 internal class SongSelection(val anchor: ArtworkAnchor, val play: () -> Unit)
 
-// 歌曲行共用同一个反馈入口，真实播放操作保持原有模型调用。
+// 歌曲行共用动画完成回调，播放操作只在当前音符落下后调用。
 @Composable
-internal fun rememberSongSelection(onPlay: () -> Unit): SongSelection {
+internal fun rememberSongSelection(track: Track, onPlay: () -> Unit): SongSelection {
     val feedback = LocalSongFlight.current
     val action = rememberUpdatedState(onPlay)
+    val selected = rememberUpdatedState(track)
     val anchor = remember { ArtworkAnchor() }
-    return remember(feedback) { SongSelection(anchor) { feedback?.launch(anchor.center()); action.value() } }
+    return remember(feedback) {
+        SongSelection(anchor) {
+            if (feedback == null) action.value()
+            else feedback.launch(anchor.center(), selected.value) { action.value() }
+        }
+    }
 }
 
 // 全屏透明绘制层只承载一个矢量音符，动画帧仅更新图层，不重排底层页面。
@@ -101,7 +136,7 @@ internal fun SongFlightLayer() {
     val feedback = LocalSongFlight.current ?: return
     val flight = feedback.flight
     val progress = remember { Animatable(0f) }
-    Box(Modifier.fillMaxSize().onGloballyPositioned { feedback.root = it }) {
+    Box(Modifier.fillMaxSize().onGloballyPositioned(feedback::updateRoot)) {
         if (flight != null) FlyingNote(flight, progress)
     }
     LaunchedEffect(flight?.id) {
@@ -152,6 +187,6 @@ internal fun MiniPlayerArtwork(track: Track) {
         pulse.animateTo(0f, spring(dampingRatio = 0.7f, stiffness = 500f))
     }
     TrackArtwork(track, Modifier.size(46.dp).testTag("mini-player-artwork")
-        .onGloballyPositioned { feedback?.target?.update(it) }
+        .onGloballyPositioned { feedback?.updateTarget(it) }
         .graphicsLayer { scaleX = 1f + pulse.value * SongFlightSpec.LandingScale; scaleY = scaleX })
 }

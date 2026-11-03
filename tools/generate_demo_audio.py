@@ -6,7 +6,7 @@ import wave
 import numpy as np
 
 SAMPLE_RATE = 22050
-OUTPUT = Path(__file__).resolve().parents[1] / 'app/src/main/assets'
+OUTPUT = Path(__file__).resolve().parents[1] / 'app/src/androidTest/assets'
 PIECES = (
     ('evening_wind', 252, (220.0, 174.614, 261.626, 195.998), 7),
     ('mountain_letter', 198, (196.0, 261.626, 164.814, 220.0), 13),

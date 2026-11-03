@@ -19,7 +19,7 @@ import kotlin.system.measureNanoTime
 import java.io.File
 
 class MotionPerformanceTest {
-    @get:Rule(order = 0) val library = LocalLibraryFixture(clearOnStart = true)
+    @get:Rule(order = 0) val library = LocalLibraryFixture(clearOnStart = true, seedTracks = true)
     @get:Rule(order = 1) val compose = createAndroidComposeRule<MainActivity>()
 
     // 使用自有离线音频构造长队列，不请求伪造歌曲、不修改云端收藏。
@@ -60,10 +60,10 @@ class MotionPerformanceTest {
             largeQueue(model)
             model.play(selected, DemoCatalog.tracks.drop(1))
         }
-        compose.waitUntil(15_000) { model.playback.track.id == selected.id && model.playback.queue.size == 2 }
+        compose.waitUntil(15_000) { model.playback.track?.id == selected.id && model.playback.queue.size == 2 }
         android.os.SystemClock.sleep(500)
         compose.runOnIdle {
-            assertEquals(selected.id, model.playback.track.id)
+            assertEquals(selected.id, model.playback.track?.id)
             assertEquals(DemoCatalog.tracks.drop(1).map { it.id }, model.playback.queue.map { it.id })
         }
     }
@@ -83,32 +83,69 @@ class MotionPerformanceTest {
         compose.onNodeWithText("性能检查 580").assertIsDisplayed()
         compose.onNodeWithTag("queue-song-list").performScrollToIndex(599)
         compose.onNodeWithText("性能检查 599").performClick()
-        compose.waitUntil(10_000) { model.playback.track.id == "motion-test-599" }
+        compose.waitUntil(10_000) { model.playback.track?.id == "motion-test-599" }
         compose.runOnIdle { assertEquals(600, model.playback.queue.size) }
     }
 
     // 留在原列表连续点歌时只有一个音符，动画结束后仍可从迷你条展开播放器。
     @Test fun selectingSongFliesOneNoteAndKeepsLibraryVisible() {
+        val model = currentModel()
         compose.onNodeWithText("我的", useUnmergedTree = true).performClick()
-        compose.onNodeWithContentDescription("音乐设置").performClick()
-        compose.onNodeWithText("离线演示").performClick()
+        compose.onNodeWithContentDescription("本地音乐").performClick()
         val song = compose.onNodeWithContentDescription("播放歌曲：山谷来信").performScrollTo()
         compose.mainClock.autoAdvance = false
         try {
             song.performClick()
             compose.mainClock.advanceTimeBy(176)
             compose.onNodeWithTag("song-flight").assertIsDisplayed()
+            assertFalse("音符飞行期间不能开始播放", model.playback.playing)
+            assertNull("音符完成前不能提交媒体队列", model.preparingTrack)
             compose.onNodeWithText("正在播放").assertDoesNotExist()
             saveFlightImage()
-            song.performClick()
+            compose.onNodeWithContentDescription("播放歌曲：午后三点").performClick()
             compose.mainClock.advanceTimeBy(160)
             compose.onAllNodesWithTag("song-flight").assertCountEquals(1)
-            compose.mainClock.advanceTimeBy(2_000)
+            // 总时长增加至 1.06 秒后，960ms 时仍应保留同一个飞行音符。
+            compose.mainClock.advanceTimeBy(800)
+            compose.onAllNodesWithTag("song-flight").assertCountEquals(1)
+            assertFalse("960ms 时仍不能播放新歌曲", model.playback.playing)
+            compose.mainClock.advanceTimeBy(200)
             compose.onNodeWithTag("song-flight").assertDoesNotExist()
         } finally { compose.mainClock.autoAdvance = true }
+        compose.waitUntil(15_000) { model.playback.track?.id == "slow-afternoon" && model.playback.playing }
+        assertFalse("被后一次选择替代的歌曲不能写入播放历史", "mountain-letter" in model.recentIds)
         compose.onNodeWithTag("mini-player-artwork", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithContentDescription("打开播放页").performClick()
         compose.onNodeWithText("正在播放").assertIsDisplayed()
+    }
+
+    // 已有歌曲正在播放时，重新点歌先静音，动画完成后才启动新的录音。
+    @Test fun anotherSongStartsOnlyAfterTheFlightHasLanded() {
+        val model = currentModel()
+        compose.runOnIdle { model.play(DemoCatalog.tracks.first(), DemoCatalog.tracks) }
+        compose.waitUntil(15_000) { model.playback.playing }
+        compose.onNodeWithText("我的", useUnmergedTree = true).performClick()
+        compose.onNodeWithContentDescription("本地音乐").performClick()
+        val selectedSong = hasContentDescription("播放歌曲：山谷来信")
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(selectedSong)
+        compose.mainClock.autoAdvance = false
+        try {
+            compose.onNode(selectedSong).performClick()
+            compose.waitUntil(5_000) { !model.playback.playing }
+            compose.mainClock.advanceTimeBy(960)
+            compose.onNodeWithTag("song-flight").assertIsDisplayed()
+            assertEquals("evening-wind", model.playback.track?.id)
+            assertFalse(model.playback.playing)
+            compose.mainClock.advanceTimeBy(200)
+        } finally { compose.mainClock.autoAdvance = true }
+        compose.waitUntil(15_000) { model.playback.track?.id == "mountain-letter" && model.playback.playing }
+    }
+
+    // 所有点歌流程读取真实页面持有的同一媒体模型。
+    private fun currentModel(): MusicViewModel {
+        lateinit var model: MusicViewModel
+        compose.runOnIdle { model = ViewModelProvider(compose.activity)[MusicViewModel::class.java] }
+        return model
     }
 
     // 保存时钟暂停处的真实中间帧，验证音符与源歌曲、目标播放条的空间关系。

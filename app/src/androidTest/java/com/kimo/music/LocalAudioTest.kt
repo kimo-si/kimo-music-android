@@ -2,20 +2,28 @@ package com.kimo.music
 
 import android.content.ContentValues
 import android.content.Context
+import android.app.Application
 import android.net.Uri
+import android.os.SystemClock
 import android.provider.MediaStore
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelStoreOwner
 import androidx.test.core.app.ApplicationProvider
+import androidx.test.platform.app.InstrumentationRegistry
 import com.kimo.music.data.LibraryStore
 import com.kimo.music.data.LocalAudioReader
 import com.kimo.music.data.DemoCatalog
 import com.kimo.music.data.FavoriteOrdering
 import com.kimo.music.data.TrackStorage
+import com.kimo.music.data.Track
 import com.kimo.music.core.KugouMapper
+import com.kimo.music.playback.MusicViewModel
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.Rule
-import com.kimo.music.R
 import java.nio.ByteBuffer
 
 class LocalAudioTest {
@@ -51,6 +59,68 @@ class LocalAudioTest {
         assertEquals(42L, TrackStorage.decode(legacy).cloudFileId)
     }
 
+    // 旧缓存的占位先隐藏，从原音频核实后保留真实标签并兼容重新存储。
+    @Test fun legacyLocalCreditsAreVerifiedFromOriginalAudio() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val uri = createAudioDocument(context)
+        try {
+            val reader = LocalAudioReader(context)
+            val original = reader.read(uri)
+            val encoded = TrackStorage.encode(original.copy(artist = "本地音乐", album = "本地音乐"))
+            encoded.remove("metadataVerified")
+            val legacy = TrackStorage.decode(encoded)
+            assertEquals("本地音乐", legacy.artist)
+            assertEquals("", legacy.displayArtist)
+            assertEquals("", legacy.displayAlbum)
+            val verified = legacy.withVerifiedCredits(reader.readCredits(uri))
+            assertEquals(original.artist, verified.displayArtist)
+            assertEquals(original.album, verified.displayAlbum)
+            assertEquals(verified, TrackStorage.decode(TrackStorage.encode(verified)))
+        } finally { context.contentResolver.delete(uri, null, null) }
+    }
+
+    // 模型启动后自动核实旧文件，无法读取的旧条目仍保留原值并隐藏占位。
+    @Test fun viewModelVerifiesLegacyCreditsWithoutChangingStoredRecords() {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val uri = createAudioDocument(context)
+        val owner = object : ViewModelStoreOwner { override val viewModelStore = ViewModelStore() }
+        val original = LocalAudioReader(context).read(uri)
+        val valid = legacyTrack(original)
+        val missing = legacyTrack(original.copy(id = "missing", mediaUri = "content://missing/audio"))
+        context.getSharedPreferences("kimo_library", Context.MODE_PRIVATE).edit()
+            .putString("local_tracks", JSONArray().put(valid).put(missing).toString()).commit()
+        try {
+            lateinit var model: MusicViewModel
+            InstrumentationRegistry.getInstrumentation().runOnMainSync {
+                model = ViewModelProvider(owner, ViewModelProvider.AndroidViewModelFactory.getInstance(context))[MusicViewModel::class.java]
+            }
+            val tracks = awaitVerifiedTrack(model, original.id)
+            assertEquals(original.artist, tracks.first { it.id == original.id }.displayArtist)
+            assertEquals(original.album, tracks.first { it.id == original.id }.displayAlbum)
+            assertEquals("", tracks.first { it.id == "missing" }.displayArtist)
+            assertEquals("本地音乐", LibraryStore(context).localTracks().first().artist)
+        } finally {
+            InstrumentationRegistry.getInstrumentation().runOnMainSync { owner.viewModelStore.clear() }
+            context.contentResolver.delete(uri, null, null)
+        }
+    }
+
+    // 构造旧版缺少可信标记的持久化记录，不改变真实音频文件。
+    private fun legacyTrack(track: Track): JSONObject = TrackStorage.encode(track.copy(artist = "本地音乐", album = "本地音乐"))
+        .apply { remove("metadataVerified") }
+
+    // 在主线程读取模型快照，等待后台音频标签核对完成。
+    private fun awaitVerifiedTrack(model: MusicViewModel, id: String): List<Track> {
+        val deadline = SystemClock.uptimeMillis() + 10_000
+        var tracks = emptyList<Track>()
+        while (SystemClock.uptimeMillis() < deadline) {
+            InstrumentationRegistry.getInstrumentation().runOnMainSync { tracks = model.localTracks }
+            if (tracks.any { it.id == id && it.metadataVerified }) return tracks
+            SystemClock.sleep(50)
+        }
+        throw AssertionError("旧音频标签未完成核对")
+    }
+
     // 从真实 MP3 的 APIC 标签提取该文件自己的封面，验证原始图片字节完整保留。
     @Test fun importedArtworkComesFromTheAudioFile() {
         val context = ApplicationProvider.getApplicationContext<Context>()
@@ -59,7 +129,7 @@ class LocalAudioTest {
             val track = LocalAudioReader(context).read(uri)
             val cover = Uri.parse(requireNotNull(track.coverUrl))
             val actual = requireNotNull(context.contentResolver.openInputStream(cover)).use { it.readBytes() }
-            val expected = context.resources.openRawResource(R.drawable.forest_letter).use { it.readBytes() }
+            val expected = InstrumentationRegistry.getInstrumentation().context.assets.open("forest_letter.png").use { it.readBytes() }
             assertArrayEquals(expected, actual)
             assertEquals("file", cover.scheme)
         } finally { context.contentResolver.delete(uri, null, null) }
@@ -93,7 +163,7 @@ class LocalAudioTest {
             put(MediaStore.Audio.Media.MIME_TYPE, "audio/mpeg")
         }
         val uri = requireNotNull(context.contentResolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values))
-        val audio = context.assets.open("evening_wind.mp3").use { it.readBytes() }
+        val audio = InstrumentationRegistry.getInstrumentation().context.assets.open("evening_wind.mp3").use { it.readBytes() }
         requireNotNull(context.contentResolver.openOutputStream(uri)).use { output ->
             output.write(if (embeddedArtwork) embedArtwork(context, audio) else audio)
         }
@@ -102,7 +172,7 @@ class LocalAudioTest {
 
     // 测试将已有原创封面原样封装为 ID3 图片帧，不生成或修改图像内容。
     private fun embedArtwork(context: Context, audio: ByteArray): ByteArray {
-        val picture = context.resources.openRawResource(R.drawable.forest_letter).use { it.readBytes() }
+        val picture = InstrumentationRegistry.getInstrumentation().context.assets.open("forest_letter.png").use { it.readBytes() }
         val payload = byteArrayOf(0) + "image/png".toByteArray() + byteArrayOf(0, 3, 0) + picture
         val frame = "APIC".toByteArray() + ByteBuffer.allocate(4).putInt(payload.size).array() + byteArrayOf(0, 0) + payload
         val size = ByteArray(4) { index -> ((frame.size shr ((3 - index) * 7)) and 0x7f).toByte() }

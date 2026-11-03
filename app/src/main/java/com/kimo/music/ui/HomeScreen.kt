@@ -1,28 +1,28 @@
 package com.kimo.music.ui
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil3.compose.AsyncImage
-import com.kimo.music.R
 import com.kimo.music.core.CatalogEntry
-import com.kimo.music.data.ListeningMood
 import com.kimo.music.data.Track
 import com.kimo.music.playback.MusicViewModel
 import com.kimo.music.ui.theme.KimoColors
@@ -77,7 +77,9 @@ private fun HomeScrollableFeed(model: MusicViewModel, tab: HomeTab, onDiscover: 
 // 推荐区按层次展示精选、灵感、歌曲与个人历史。
 private fun androidx.compose.foundation.lazy.LazyListScope.featuredItems(model: MusicViewModel, onDiscover: () -> Unit,
                                                                         onPlay: (Track, List<Track>) -> Unit) {
-    item { FeaturedCard(model, onPlay) }
+    model.online.recommendations.state.items.firstOrNull()?.let { track ->
+        item { FeaturedCard(track) { onPlay(track, model.online.recommendations.state.items) } }
+    }
     item { InspirationSection(model, onDiscover) }
     item { SectionHeading("为你推荐", onDiscover) }
     items(model.online.recommendations.state.items, key = Track::id) { track ->
@@ -113,9 +115,9 @@ private fun HomeHeader(model: MusicViewModel, onSearch: () -> Unit, onProfile: (
         Text("Kimo", Modifier.weight(1f), fontSize = 25.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-1).sp)
         ActionIcon("搜索音乐", Icons.Outlined.Search, onClick = onSearch)
         IconButton(onProfile, Modifier.size(48.dp)) {
-            AsyncImage(model.account.state.profile?.avatar, "账号与同步", Modifier.size(34.dp).clip(CircleShape),
-                placeholder = painterResource(R.drawable.sunset_coast), error = painterResource(R.drawable.sunset_coast),
-                contentScale = ContentScale.Crop)
+            Box(Modifier.semantics { contentDescription = "账号信息" }) {
+                AccountAvatar(model.account.state.profile?.avatar, Modifier.size(34.dp))
+            }
         }
     }
 }
@@ -147,15 +149,18 @@ private fun HomeTabs(selected: HomeTab, onSelect: (HomeTab) -> Unit) {
     }
 }
 
-// 精选大图播放当前真实推荐，未加载时不回退到演示曲冒充在线内容。
+// 精选卡只展示真实推荐歌曲，并以该歌曲建立播放队列。
 @Composable
-private fun FeaturedCard(model: MusicViewModel, onPlay: (Track, List<Track>) -> Unit) {
-    MoodCard(ListeningMood.Sunset, Modifier.fillMaxWidth().aspectRatio(1.54f), featured = true) {
-        val tracks = model.online.recommendations.state.items
-        val first = tracks.firstOrNull()
-        if (first != null) onPlay(first, tracks)
-        else if (model.account.credentials == null) model.loginRequested = true
-        else model.online.recommendations.load(true)
+private fun FeaturedCard(track: Track, onPlay: () -> Unit) {
+    Box(Modifier.fillMaxWidth().aspectRatio(1.54f).clip(androidx.compose.foundation.shape.RoundedCornerShape(KimoLayout.CardRadius))
+        .clickable(onClick = onPlay)) {
+        TrackArtwork(track, Modifier.matchParentSize())
+        Box(Modifier.matchParentSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.8f)))))
+        Column(Modifier.align(Alignment.BottomStart).padding(18.dp)) {
+            TrackTitle(track, color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+            if (track.displayArtist.isNotBlank()) Text(track.displayArtist, color = Color.White.copy(alpha = 0.8f), fontSize = 13.sp)
+        }
+        Icon(Icons.Rounded.PlayArrow, "播放${track.title}", Modifier.align(Alignment.BottomEnd).padding(18.dp).size(32.dp), tint = Color.White)
     }
 }
 

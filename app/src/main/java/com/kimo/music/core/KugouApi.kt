@@ -1,18 +1,61 @@
 package com.kimo.music.core
 
 import com.kimo.music.data.Track
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import org.json.JSONArray
 import org.json.JSONObject
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.CancellationException
+
+private const val SEARCH_SUGGESTION_LIMIT = 6
+private const val HOT_ARTWORK_CANDIDATES = 5
+private const val READ_ATTEMPTS = 3
+private const val RETRY_DELAY_MS = 250L
+private val RETRYABLE_READ_MODULES = setOf(
+    "top_playlist", "everyday_recommend", "top_song", "rank_list", "artist_lists", "search", "search_suggest", "search_hot",
+    "rank_audio", "artist_audios", "album_songs", "playlist_track_all_new", "user_cloud", "fm_songs", "playlist_track_all",
+    "user_playlist", "fm_recommend", "artist_albums", "artist_detail", "album_detail", "user_detail", "song_url",
+    "user_cloud_url", "search_lyric", "lyric", "login_qr_key", "login_qr_create", "login_qr_check", "__health",
+    "privilege_lite",
+)
 
 // 桌面与安卓共用上游核心模块，客户端只承担领域对象映射和分页编排。
 class KugouApi(private val core: CoreTransport, private val auth: () -> AuthCredentials?) {
-    // 每次请求读取当前账号，注销或切换账号后不复用旧凭据。
-    suspend fun request(module: String, parameters: JSONObject = JSONObject()): JSONObject =
-        core.execute(module, parameters, auth()?.json() ?: JSONObject()).requireSuccess()
+    // 取流前读取当前会话，不能用展示昵称或会员图标推断登录状态。
+    internal fun hasSession(): Boolean = auth()?.let { it.token.isNotBlank() && it.userId.isNotBlank() } == true
+
+    // 以资源权益接口核实标准音质，响应缺项时返回未知，不凭列表的通用付费字段猜测。
+    suspend fun memberships(tracks: List<Track>): List<TrackMembership> {
+        require(tracks.size <= MEMBERSHIP_BATCH_SIZE)
+        if (tracks.isEmpty()) return emptyList()
+        val parameters = JSONObject().put("hash", tracks.joinToString(",") { it.hash })
+            .put("album_id", tracks.joinToString(",") { it.albumId.toString() }).put("qualities", MEMBERSHIP_STANDARD_QUALITY)
+        // 批量读取真实资源权益，并逐首校验音频和专辑身份。
+        val resources = request("privilege_lite", parameters).optJSONArray("data")?.objects().orEmpty()
+        return tracks.map { MembershipMapper.resolve(it, resources) }
+    }
+
+    // 只对明确的只读请求重试；账号变化或协程取消后立即终止。
+    suspend fun request(module: String, parameters: JSONObject = JSONObject()): JSONObject {
+        val credentials = auth()
+        val attempts = if (module in RETRYABLE_READ_MODULES) READ_ATTEMPTS else 1
+        repeat(attempts) { index ->
+            if (auth() != credentials) throw CancellationException("账号已切换")
+            try { return execute(module, parameters, credentials) }
+            catch (error: MusicApiException) {
+                if (!error.retryable || index == attempts - 1) throw error
+                // 短暂退避后再读取，避免瞬时故障造成密集请求。
+                delay(RETRY_DELAY_MS * (index + 1))
+            }
+        }
+        throw MusicApiException(SERVER_ERROR_MESSAGE)
+    }
+
+    // 只在协议边界转换异常，不让技术堆栈或请求参数进入界面。
+    private suspend fun execute(module: String, parameters: JSONObject, credentials: AuthCredentials?): JSONObject = try {
+        core.execute(module, parameters, credentials?.json() ?: JSONObject()).requireSuccess()
+    } catch (cancelled: CancellationException) { throw cancelled }
+    catch (error: MusicApiException) { throw error }
+    catch (_: Exception) { throw MusicApiException(SERVER_ERROR_MESSAGE, retryable = true) }
 
     // 推荐歌单和广场共用同一分页接口，保留原始全局歌单标识。
     suspend fun playlists(page: PageRequest = PageRequest()): EntryPage {
@@ -58,25 +101,36 @@ class KugouApi(private val core: CoreTransport, private val auth: () -> AuthCred
         return SearchResult(entries = rows.mapNotNull { KugouMapper.entry(it, catalogKind) }, nextPage = nextPage(rows.size, page))
     }
 
-    // 热搜顺序来自酷狗，首屏四项并行补齐真实歌曲封面与歌手信息。
-    suspend fun hotSearches(): List<HotSearch> = coroutineScope {
+    // 只读取通用联想词分组，过滤空值与重复项，避免将歌曲或专辑详情混入输入建议。
+    suspend fun searchSuggestions(keyword: String): List<SearchSuggestion> {
+        val word = keyword.trim().takeIf(String::isNotEmpty) ?: return emptyList()
+        val parameters = JSONObject().put("keywords", word).put("musicTipCount", SEARCH_SUGGESTION_LIMIT)
+        // 通过已内置的酷狗模块请求真实联想词，空输入不会发起远程调用。
+        val response = request("search_suggest", parameters)
+        val group = response.optJSONArray("data")?.optJSONObject(0) ?: return emptyList()
+        return group.rows("RecordDatas").map { it.text("HintInfo").trim() }
+            .filter(String::isNotEmpty).distinct().take(SEARCH_SUGGESTION_LIMIT).map(::SearchSuggestion)
+    }
+
+    // 热搜只展示接口直接返回的词和说明，不把搜索结果猜作对应歌曲。
+    suspend fun hotSearches(): List<HotSearch> {
         val groups = payload(request("search_hot")).rows("list")
         val rows = groups.firstOrNull { it.text("name") == "热搜榜" }?.rows("keywords")
             ?: groups.firstOrNull()?.rows("keywords").orEmpty()
-        val terms = rows.mapNotNull { row -> row.text("keyword").takeIf(String::isNotBlank)?.let {
+        return rows.mapNotNull { row -> row.text("keyword").takeIf(String::isNotBlank)?.let {
             HotSearch(it, row.text("reason"))
         } }.distinctBy(HotSearch::keyword)
-        val enriched = terms.take(4).map { term -> async { enrichHotSearch(term) } }.awaitAll()
-        enriched + terms.drop(4)
     }
 
-    // 单项图片补取失败不影响真实热搜列表，取消请求时继续传播取消信号。
-    private suspend fun enrichHotSearch(term: HotSearch): HotSearch = try {
-        val track = search(term.keyword, SearchKind.Song, PageRequest(size = 1)).tracks.firstOrNull()
-        val cover = track?.coverUrl ?: track?.let { artwork(it) }
-        term.copy(track = track?.copy(coverUrl = cover))
-    } catch (cancelled: CancellationException) { throw cancelled }
-    catch (_: Exception) { term }
+    // 只为同名歌曲或歌手与歌名完整匹配的热词提供真实封面，不使用无关的首条结果。
+    suspend fun hotSearchArtwork(term: HotSearch): String? {
+        if (term.keyword.isBlank()) return null
+        // 搜索独立于热词列表加载，图片缺失不会阻止热搜文字展示。
+        val candidates = search(term.keyword, SearchKind.Song, PageRequest(size = HOT_ARTWORK_CANDIDATES)).tracks
+        val track = KugouMapper.hotSearchTrack(term, candidates) ?: return null
+        // 搜索未带图片时，沿用已有的专辑编号校验后补取封面。
+        return track.coverUrl ?: artwork(track)
+    }
 
     // 不同目录按各自协议读取，云歌单必须使用 listid 与 fileid。
     suspend fun tracks(entry: CatalogEntry, page: PageRequest, order: ArtistOrder = ArtistOrder.Hot): TrackPage {
@@ -184,7 +238,7 @@ class KugouApi(private val core: CoreTransport, private val auth: () -> AuthCred
         val introduction = data.rows("long_intro").joinToString("\n") { it.text("content") }.ifBlank { data.text("intro") }
         return ArtistProfile(data.text("author_name", "singername").ifBlank { entry.title },
             KugouMapper.sizedImage(data.text("sizable_avatar", "avatar")), introduction,
-            data.number("fansnums", "fanscount"), data.number("album_count", "albumcount"))
+            data.optionalNumber("fansnums", "fanscount"), data.optionalNumber("album_count", "albumcount"))
     }
 
     // 曲目列表缺少图片时按真实专辑编号补取封面，不用固定照片冒充其他歌曲。
@@ -193,7 +247,7 @@ class KugouApi(private val core: CoreTransport, private val auth: () -> AuthCred
         if (track.albumId <= 0) return null
         val response = request("album_detail", JSONObject().put("id", track.albumId))
         val entries = response.optJSONArray("data")?.objects() ?: payload(response).rows("info", "list")
-        val album = entries.firstOrNull { it.number("album_id") == track.albumId } ?: entries.firstOrNull() ?: return null
+        val album = entries.firstOrNull { it.number("album_id") == track.albumId } ?: return null
         return KugouMapper.sizedImage(album.text("sizable_cover", "cover", "img"))
     }
 

@@ -30,7 +30,7 @@ class PagedFeed<T>(private val scope: CoroutineScope, private val keyOf: (T) -> 
                     (if (page == 1) result.items else state.items + result.items).distinctBy(keyOf), false, null, result.nextPage)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {
-                if (current == generation) state = state.copy(loading = false, error = error.message ?: "内容加载失败，请重试")
+                if (current == generation) state = state.copy(loading = false, error = error.userMessage())
             } finally {
                 if (current == generation) state = state.copy(loading = false)
             }

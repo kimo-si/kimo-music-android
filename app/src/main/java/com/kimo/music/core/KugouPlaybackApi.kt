@@ -1,7 +1,11 @@
 package com.kimo.music.core
 
 import com.kimo.music.data.Track
+import kotlinx.coroutines.CancellationException
 import org.json.JSONObject
+
+const val VIP_LOGIN_REQUIRED_MESSAGE = "这首歌需要 VIP 权益，请先登录"
+class VipLoginRequiredException : Exception(VIP_LOGIN_REQUIRED_MESSAGE)
 
 enum class AudioQuality(val title: String, val code: String) {
     Standard("标准", "128"), High("高品", "320"), Lossless("无损", "flac")
@@ -11,6 +15,8 @@ class KugouPlaybackApi(private val api: KugouApi) {
     // 按实际账号权益请求音质，地址不可用时只向较低音质降级。
     suspend fun stream(track: Track, quality: AudioQuality): StreamAddress {
         if (track.cloudDrive) return cloudStream(track)
+        // 未登录时先核对真实标准音质权益，避免进入注定被拒绝的会员取流流程。
+        requireGuestAccess(track)
         val hashes = mutableListOf(track.hash)
         var cursor = 0
         while (cursor < hashes.size) {
@@ -19,6 +25,15 @@ class KugouPlaybackApi(private val api: KugouApi) {
             streamForHash(hash, track, quality, hashes)?.let { return it }
         }
         throw MusicApiException("当前账号没有这首歌的可用播放地址，请检查登录状态或音质")
+    }
+
+    // 只拦截资源接口明确核实的 VIP；免费、未知权益及已登录账号继续按实际取流结果处理。
+    private suspend fun requireGuestAccess(track: Track) {
+        if (api.hasSession()) return
+        val status = try { api.memberships(listOf(track)).singleOrNull()?.status }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: MusicApiException) { return }
+        if (!api.hasSession() && status == MembershipStatus.Vip) throw VipLoginRequiredException()
     }
 
     // 单个 hash 内从所选音质向下请求，同时收集服务端提供的标准 hash。

@@ -1,6 +1,8 @@
 package com.kimo.music.ui
 
-import androidx.compose.foundation.layout.Column
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import com.kimo.music.core.CatalogEntry
@@ -16,12 +18,11 @@ fun ManagePlaylistDialog(entry: CatalogEntry, model: MusicViewModel, onDismiss: 
             model.online.changePlaylist(entry, name, onResult = model::notice); onDismiss()
         }
         deleting -> ConfirmPlaylistDeletion(entry, model, onDismiss)
-        else -> AlertDialog(onDismissRequest = onDismiss, title = { Text(entry.title) }, text = {
-            Column {
-                if (entry.listType == 0) TextButton({ rename = true }) { Text("重命名云歌单") }
-                TextButton({ deleting = true }) { Text(if (entry.listType == 0) "删除这个云歌单" else "取消收藏这个歌单") }
-            }
-        }, confirmButton = { TextButton(onDismiss) { Text("完成") } })
+        else -> KimoActionSheet(entry.title, onDismiss, "管理歌单") {
+            if (entry.listType == 0) KimoSheetOption("重命名云歌单", Icons.Outlined.Edit, { rename = true })
+            KimoSheetOption(if (entry.listType == 0) "删除这个云歌单" else "取消收藏这个歌单",
+                Icons.Outlined.DeleteOutline, { deleting = true })
+        }
     }
 }
 
@@ -29,8 +30,11 @@ fun ManagePlaylistDialog(entry: CatalogEntry, model: MusicViewModel, onDismiss: 
 @Composable
 private fun ConfirmPlaylistDeletion(entry: CatalogEntry, model: MusicViewModel, onDismiss: () -> Unit) {
     AlertDialog(onDismissRequest = onDismiss, title = { Text("确认处理「${entry.title}」？") },
-        text = { Text(if (entry.listType == 0) "将删除酷狗账号中的这个歌单，歌单内的歌曲不会从平台曲库删除。"
-            else "将从酷狗账号的收藏歌单中移除这个歌单。") },
+        text = {
+            KimoTipWindow()
+            Text(if (entry.listType == 0) "将删除酷狗账号中的这个歌单，歌单内的歌曲不会从平台曲库删除。"
+                else "将从酷狗账号的收藏歌单中移除这个歌单。")
+        },
         confirmButton = { TextButton({
             model.online.changePlaylist(entry, null, delete = true, onResult = model::notice)
             onDismiss()

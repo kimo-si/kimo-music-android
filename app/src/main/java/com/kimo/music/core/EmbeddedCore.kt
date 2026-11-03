@@ -7,7 +7,7 @@ import com.caoccao.javet.interop.V8Host
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.io.File
 import java.util.UUID
@@ -27,7 +27,8 @@ class EmbeddedCore private constructor(context: Context) : CoreTransport {
         val id = UUID.randomUUID().toString()
         engine.getExecutor("kimoBegin(${JSONObject.quote(id)},${JSONObject.quote(module)},$parameters,$credentials)").executeVoid()
         try {
-            withTimeout(REQUEST_TIMEOUT_MS) { awaitResponse(engine, id) }
+            withTimeoutOrNull(REQUEST_TIMEOUT_MS) { awaitResponse(engine, id) }
+                ?: throw MusicApiException(SERVER_ERROR_MESSAGE, retryable = true)
         } finally {
             engine.getExecutor("kimoCancel(${JSONObject.quote(id)})").executeVoid()
         }
@@ -82,7 +83,7 @@ class EmbeddedCore private constructor(context: Context) : CoreTransport {
     }
 
     companion object {
-        private const val REQUEST_TIMEOUT_MS = 25_000L
+        private const val REQUEST_TIMEOUT_MS = 15_000L
         private const val EVENT_INTERVAL_MS = 15L
         @Volatile private var instance: EmbeddedCore? = null
 

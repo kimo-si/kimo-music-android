@@ -3,10 +3,13 @@ package com.kimo.music
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.test.core.app.ApplicationProvider
+import com.kimo.music.data.DemoCatalog
+import com.kimo.music.data.LibraryStore
 import org.junit.rules.ExternalResource
 
 // 界面测试临时使用本机曲库，结束后恢复设备原有数据；账号容器独立不参与测试。
-class LocalLibraryFixture(private val clearOnStart: Boolean = false) : ExternalResource() {
+class LocalLibraryFixture(private val clearOnStart: Boolean = false, private val seedTracks: Boolean = false,
+    private val seedLegacyDemo: Boolean = false) : ExternalResource() {
     private data class SavedPreference(val name: String, val value: Any?)
     private var saved = emptyList<SavedPreference>()
 
@@ -15,6 +18,15 @@ class LocalLibraryFixture(private val clearOnStart: Boolean = false) : ExternalR
         val preferences = preferences()
         saved = preferences.all.map { SavedPreference(it.key, it.value) }
         if (clearOnStart) preferences.edit().clear().commit()
+        if (seedTracks) {
+            val store = LibraryStore(ApplicationProvider.getApplicationContext())
+            store.saveLocalTracks((store.localTracks() + DemoCatalog.tracks).distinctBy { it.id })
+        }
+        if (seedLegacyDemo) {
+            val store = LibraryStore(ApplicationProvider.getApplicationContext())
+            store.saveFavorites(setOf(DemoCatalog.tracks.first().id))
+            store.record(DemoCatalog.tracks.first())
+        }
     }
 
     // Activity 释放后一次性恢复，避免测试留下播放历史或覆盖导入记录。

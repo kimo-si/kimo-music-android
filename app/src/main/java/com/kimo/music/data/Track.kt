@@ -1,14 +1,5 @@
 package com.kimo.music.data
 
-import androidx.annotation.DrawableRes
-import com.kimo.music.R
-
-enum class ListeningMood(val title: String, val subtitle: String, @DrawableRes val artwork: Int) {
-    Sunset("日落电台", "把日落，听慢一点", R.drawable.sunset_coast),
-    Forest("山野来信", "风穿过山谷，也穿过你", R.drawable.forest_letter),
-    Slow("慢半拍", "在温柔的节奏里，找到自己", R.drawable.slow_afternoon),
-}
-
 data class Track(
     val id: String,
     val title: String,
@@ -16,8 +7,6 @@ data class Track(
     val album: String,
     val mediaUri: String,
     val durationMs: Long,
-    @DrawableRes val artwork: Int,
-    val mood: ListeningMood = ListeningMood.Sunset,
     val fileName: String = "$title.mp3",
     val local: Boolean = false,
     val hash: String = "",
@@ -27,7 +16,27 @@ data class Track(
     val cloudFileId: Long = 0,
     val cloudDrive: Boolean = false,
     val favoriteAddedAtMs: Long = 0,
-)
+    val metadataVerified: Boolean = true,
+) {
+    // 旧版本把缺失的本地标签写成固定文字，确认来源前不把它当成真实信息展示。
+    val needsMetadataVerification: Boolean get() = local && !metadataVerified &&
+        (artist == LEGACY_LOCAL_CREDIT || album == LEGACY_LOCAL_CREDIT)
+    val displayArtist: String get() = displayCredit(artist)
+    val displayAlbum: String get() = displayCredit(album)
+
+    // 只隐藏来源不明的旧占位，不影响新导入的同名真实标签。
+    private fun displayCredit(value: String): String =
+        if (needsMetadataVerification && value == LEGACY_LOCAL_CREDIT) "" else value
+
+    // 文件可读取时仅替换旧占位，其他已保存的信息原样保留。
+    fun withVerifiedCredits(credits: AudioCredits): Track = copy(
+        artist = if (artist == LEGACY_LOCAL_CREDIT) credits.artist else artist,
+        album = if (album == LEGACY_LOCAL_CREDIT) credits.album else album,
+        metadataVerified = true,
+    )
+}
+
+private const val LEGACY_LOCAL_CREDIT = "本地音乐"
 
 data class FavoriteMark(val trackId: String, val addedAtMs: Long)
 
@@ -52,17 +61,6 @@ object FavoriteOrdering {
 // 在线歌曲只保存稳定标识，播放地址在播放时按当前账号权益重新获取。
 val Track.online: Boolean get() = hash.isNotBlank() && !local
 
-object DemoCatalog {
-    val tracks = listOf(
-        Track("evening-wind", "晚风经过", "林间回声", "DUSK NOTES", "asset:///evening_wind.mp3",
-            252_000, R.drawable.sunset_coast),
-        Track("mountain-letter", "山谷来信", "林间回声", "山野手记", "asset:///mountain_letter.mp3",
-            198_000, R.drawable.forest_letter, ListeningMood.Forest),
-        Track("slow-afternoon", "午后三点", "林间回声", "慢半拍", "asset:///slow_afternoon.mp3",
-            216_000, R.drawable.slow_afternoon, ListeningMood.Slow),
-    )
-}
-
 // 使用真实毫秒时长显示进度，并安全处理播放器尚未解析的时长。
 fun formatDuration(milliseconds: Long): String {
     val seconds = milliseconds.coerceAtLeast(0) / 1000
@@ -73,5 +71,5 @@ fun formatDuration(milliseconds: Long): String {
 fun List<Track>.matching(query: String): List<Track> {
     val normalized = query.trim()
     if (normalized.isEmpty()) return this
-    return filter { "${it.title} ${it.artist} ${it.album}".contains(normalized, ignoreCase = true) }
+    return filter { "${it.title} ${it.displayArtist} ${it.displayAlbum}".contains(normalized, ignoreCase = true) }
 }

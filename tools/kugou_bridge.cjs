@@ -5,6 +5,9 @@ const fs = require('node:fs');
 for (const method of ['log', 'warn', 'error', 'debug']) console[method] = () => {};
 process.env.platform = 'lite';
 process.env.KIMO_CORE_DATA = path.join(__dirname, '..', 'device-data');
+// 上游请求封装未传递 timeout；设置 Axios 默认值，避免断线请求无限等待。
+const NETWORK_TIMEOUT_MS = 12000;
+require('axios').defaults.timeout = NETWORK_TIMEOUT_MS;
 const { createRequest } = require('kugoumusicapi/util/index.js');
 const moduleDirectory = path.join(__dirname, 'node_modules/kugoumusicapi/module');
 const modules = new Set(fs.readdirSync(moduleDirectory).filter(name => name.endsWith('.js')).map(name => name.slice(0, -3)));
@@ -37,17 +40,36 @@ async function invoke(moduleName, parameters, credentials) {
   const deviceStore = await deviceReady;
   const cookie = requestCookie(deviceStore.getDevice(), credentials);
   const handler = require(path.join(moduleDirectory, `${moduleName}.js`));
-  const response = await handler({ ...parameters, cookie }, config => createRequest({ ...config, timeout: 20000 }));
+  const response = await handler({ ...parameters, cookie }, createRequest);
   return response.body;
 }
 
 // 异步结果只在调用方读取前短暂保留，不把登录信息写入日志或磁盘。
 globalThis.kimoBegin = function(id, moduleName, parameters, credentials) {
   active.add(id);
-  invoke(moduleName, parameters, credentials).then(body => finish(id, body), error => {
-    finish(id, error.body || { status: 0, error_code: -1, error: '音乐接口连接失败，请检查网络后重试' });
+  invoke(moduleName, parameters, credentials).then(body => finish(id, safeResponse(body)), error => {
+    finish(id, safeFailure(error));
   });
 };
+
+// 有些模块返回失败对象而不是抛出，也不能把其中的异常配置传出桥接层。
+function safeResponse(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return body;
+  const codes = [body.error_code, body.errcode].map(Number).filter(Number.isFinite);
+  const code = codes.find(value => value !== 0) || 0;
+  const status = Number(body.status);
+  const lyricSuccess = status === 200 && code === 200;
+  const failed = (code !== 0 && !lyricSuccess) ||
+    (Object.hasOwn(body, 'status') && status !== 1 && status !== 200);
+  return failed ? safeFailure({ body }) : body;
+}
+
+// 异常对象可能含堆栈、请求配置或令牌；只保留登录失效所需的错误码。
+function safeFailure(error) {
+  const codes = [error?.body?.error_code, error?.body?.errcode].map(Number);
+  const expired = codes.find(code => code === 20017 || code === 20018);
+  return { status: 0, error_code: expired || -1 };
+}
 
 // 已取消的请求直接丢弃响应，防止网络超时后残留结果占用内存。
 function finish(id, body) {

@@ -7,6 +7,7 @@ import com.kimo.music.core.CloudCache
 import com.kimo.music.core.CoreTransport
 import com.kimo.music.core.KugouApi
 import com.kimo.music.core.OnlineLibrary
+import com.kimo.music.core.SERVER_ERROR_MESSAGE
 import com.kimo.music.data.DemoCatalog
 import com.kimo.music.data.FavoriteIndex
 import kotlinx.coroutines.CompletableDeferred
@@ -37,6 +38,7 @@ class FavoriteSyncTest {
                 assertTrue(FavoriteIndex(fixture.library.favoriteTracks).contains(fixture.track))
                 assertEquals(fixture.track.id, fixture.library.favoriteTracks.single().id)
                 assertTrue(fixture.library.cloud.favorites.isEmpty())
+                assertTrue("写入确认前不显示正在加入提示", fixture.messages.isEmpty())
             }
             fixture.server.writeGate.complete(Unit)
             fixture.await { fixture.library.cloud.favorites.singleOrNull()?.cloudFileId == 42L }
@@ -50,12 +52,35 @@ class FavoriteSyncTest {
             fixture.start()
             withContext(Dispatchers.Main) { fixture.server.failWrite = true; fixture.library.toggleFavorite(fixture.track, fixture::notice) }
             fixture.server.writeGate.complete(Unit)
-            fixture.await { fixture.messages.isNotEmpty() }
+            fixture.await { fixture.messages.any { it == SERVER_ERROR_MESSAGE } }
             withContext(Dispatchers.Main) {
                 assertFalse(fixture.library.liked(fixture.track))
                 assertTrue(fixture.library.favoriteTracks.isEmpty())
-                assertTrue(fixture.messages.last().contains("模拟收藏失败"))
+                assertEquals(SERVER_ERROR_MESSAGE, fixture.messages.last())
+                assertEquals(1, fixture.server.writeAttempts)
             }
+        } finally { fixture.close() }
+    }
+
+    // 成功提示只等待收藏写入，不等待后续的慢速全量曲库读取。
+    @Test fun favoriteSuccessDoesNotWaitForFullLibraryRefresh() = runBlocking {
+        val fixture = FavoriteFixture()
+        try {
+            fixture.start()
+            withContext(Dispatchers.Main) {
+                fixture.server.readGate = CompletableDeferred()
+                fixture.library.toggleFavorite(fixture.track, fixture::notice)
+            }
+            fixture.server.writeGate.complete(Unit)
+            fixture.await { fixture.messages.any { it == "已加入我喜欢" } }
+            withContext(Dispatchers.Main) {
+                assertTrue(fixture.library.cloud.favorites.isEmpty())
+                assertTrue(fixture.library.liked(fixture.track))
+                assertEquals(listOf("已加入我喜欢"), fixture.messages)
+                fixture.server.readGate?.complete(Unit)
+            }
+            fixture.await { fixture.library.cloud.favorites.singleOrNull()?.cloudFileId == 42L }
+            withContext(Dispatchers.Main) { assertEquals(1, fixture.messages.count { it == "已加入我喜欢" }) }
         } finally { fixture.close() }
     }
 
@@ -74,8 +99,11 @@ class FavoriteSyncTest {
                 assertFalse(fixture.library.liked(fixture.track))
             }
             gate.complete(Unit)
-            fixture.await { fixture.messages.any { it.contains("模拟收藏失败") } }
-            withContext(Dispatchers.Main) { assertTrue(fixture.library.liked(fixture.track)) }
+            fixture.await { fixture.messages.any { it == SERVER_ERROR_MESSAGE } }
+            withContext(Dispatchers.Main) {
+                assertTrue(fixture.library.liked(fixture.track))
+                assertEquals(2, fixture.server.writeAttempts)
+            }
         } finally { fixture.close() }
     }
 
@@ -115,7 +143,7 @@ class FavoriteSyncTest {
                 fixture.library.toggleFavorite(fixture.track, fixture::notice)
                 assertFalse(fixture.library.liked(fixture.track))
             }
-            fixture.await { fixture.messages.any { it.contains("无法同步") } }
+            fixture.await { fixture.messages.any { it == SERVER_ERROR_MESSAGE } }
             withContext(Dispatchers.Main) { fixture.server.failReads = false; fixture.library.syncAccount() }
             fixture.await { fixture.server.writes.size == 2 && fixture.library.cloud.favorites.isEmpty() }
             withContext(Dispatchers.Main) { assertFalse(fixture.library.liked(fixture.track)) }
@@ -209,11 +237,13 @@ private class FavoriteFixture {
 
 private class FakeFavoriteServer : CoreTransport {
     var writeGate = CompletableDeferred<Unit>()
+    var readGate: CompletableDeferred<Unit>? = null
     val writeStarted = CompletableDeferred<Unit>()
     val writes = mutableListOf<String>()
     var failWrite = false
     var failReads = false
     var failReadsAfterWrite = false
+    var writeAttempts = 0
     private val tracks = mutableListOf<JSONObject>()
 
     // 返回隔离的酷狗协议形状，并允许测试控制网络延迟和失败。
@@ -226,13 +256,15 @@ private class FakeFavoriteServer : CoreTransport {
     }
 
     // 曲库读取故障不影响假服务器中已经提交的数据。
-    private fun playlists(): JSONObject {
+    private suspend fun playlists(): JSONObject {
+        readGate?.await()
         if (failReads) error("模拟曲库读取失败")
         return response(JSONArray().put(JSONObject().put("listid", 7).put("name", "我喜欢").put("is_def", 2)))
     }
 
     // 假服务端分配 fileid，删除只能使用这个真实记录编号。
     private suspend fun write(parameters: JSONObject, add: Boolean): JSONObject {
+        writeAttempts++
         writeStarted.complete(Unit)
         writeGate.await()
         if (failWrite) error("模拟收藏失败")

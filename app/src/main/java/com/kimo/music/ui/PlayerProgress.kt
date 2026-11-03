@@ -51,7 +51,7 @@ private data class SeekMotion(val phase: State<Float>,
 @Composable
 internal fun PlayerSeek(model: MusicViewModel) {
     val playback = model.playback
-    var dragging by remember(playback.track.id) { mutableStateOf<Float?>(null) }
+    var dragging by remember(playback.track?.id) { mutableStateOf<Float?>(null) }
     val duration = playback.durationMs.coerceAtLeast(1).toFloat()
     val position = dragging ?: playback.positionMs.toFloat().coerceIn(0f, duration)
     val motion = rememberSeekMotion(playback.playing && dragging == null, dragging != null)
@@ -133,6 +133,6 @@ private fun SeekThumb(motion: SeekMotion) {
 private fun SeekTimes(positionMs: Long, durationMs: Long) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(formatDuration(positionMs), fontSize = 12.sp, lineHeight = 18.sp, color = PlayerPalette.Secondary)
-        Text(formatDuration(durationMs), fontSize = 12.sp, lineHeight = 18.sp, color = PlayerPalette.Secondary)
+        Text(if (durationMs > 0) formatDuration(durationMs) else "--:--", fontSize = 12.sp, lineHeight = 18.sp, color = PlayerPalette.Secondary)
     }
 }

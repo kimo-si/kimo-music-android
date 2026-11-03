@@ -9,6 +9,8 @@ import android.util.AtomicFile
 import java.io.File
 import java.security.MessageDigest
 
+data class AudioCredits(val artist: String, val album: String)
+
 class LocalAudioReader(private val context: Context) {
     // 此同步读取函数由 ViewModel 放入 IO 调度器，解析失败时交由调用方报告。
     fun read(uri: Uri): Track {
@@ -23,14 +25,24 @@ class LocalAudioReader(private val context: Context) {
         }
     }
 
+    // 后台核实旧缓存中的歌手和专辑，不改写原文件或曲库。
+    fun readCredits(uri: Uri): AudioCredits {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(context, uri)
+            AudioCredits(retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST).orEmpty(),
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM).orEmpty())
+        } finally { retriever.release() }
+    }
+
     // 从媒体元数据构造歌曲，缺失标题时使用文件名。
     private fun createTrack(uri: Uri, reader: MediaMetadataRetriever, name: String): Track = Track(
         id = uri.toString(), title = reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE)
             ?.takeIf(String::isNotBlank) ?: name.substringBeforeLast('.'),
-        artist = reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST) ?: "本地音乐",
-        album = reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM) ?: "本地音乐",
+        artist = reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST).orEmpty(),
+        album = reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM).orEmpty(),
         mediaUri = uri.toString(), durationMs = reader.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-            ?.toLongOrNull() ?: 0, artwork = ListeningMood.Slow.artwork, fileName = name, local = true,
+            ?.toLongOrNull() ?: 0, fileName = name, local = true,
         coverUrl = runCatching { cacheArtwork(reader.embeddedPicture) }.getOrNull(),
     )
 
