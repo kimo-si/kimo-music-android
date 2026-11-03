@@ -3,7 +3,6 @@ package com.kimo.music.ui
 import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -31,6 +30,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -135,25 +135,54 @@ private fun rememberExpandedPlaylist(model: MusicViewModel, owner: String?, entr
     return expanded
 }
 
-// 各栏目独立保存滚动位置，切换后仍保留账号卡和同一排快捷入口。
-@OptIn(ExperimentalFoundationApi::class)
+// 工具栏、账号卡、四个入口和控制区都在滚动容器外，只有内容列表接收滚动。
 @Composable
 private fun LibraryPageContent(model: MusicViewModel, navigation: LibraryNavigation, actions: LibraryActions,
     tracks: List<Track>, expanded: ExpandedLibraryPlaylist?, onExpand: (CatalogEntry) -> Unit) {
-    LazyColumn(contentPadding = PaddingValues(horizontal = KimoLayout.PageInset, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        stickyHeader(key = "library-header") {
-            Box(Modifier.background(KimoColors.Paper)) {
-                LibraryHeader(actions.search, { model.downloadsRequested = true }) { navigation.overlay = LibraryOverlay.Settings }
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val compact = maxHeight < 500.dp && maxWidth > 600.dp
+        Column(Modifier.fillMaxSize().padding(horizontal = KimoLayout.PageInset).padding(top = if (compact) 4.dp else 6.dp)) {
+            LibraryFixedHeader(model, navigation, actions, tracks, compact)
+            LazyColumn(Modifier.fillMaxWidth().weight(1f).testTag("library-content-list"),
+                contentPadding = PaddingValues(top = 6.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (navigation.tab == LibraryTab.Playlists) libraryPlaylistItems(model, navigation, actions, expanded, onExpand)
+                else librarySongItems(model, navigation, actions, tracks)
             }
         }
-        item(key = "library-identity") {
-            LibraryIdentityCard(LibraryIdentity.from(model.account.state, model.account.credentials != null)) { model.loginRequested = true }
+    }
+}
+
+// 横屏将账号卡与入口并排，固定上方内容的同时为下方列表保留空间。
+@Composable
+private fun LibraryFixedHeader(model: MusicViewModel, navigation: LibraryNavigation, actions: LibraryActions,
+    tracks: List<Track>, compact: Boolean) {
+    val identity = LibraryIdentity.from(model.account.state, model.account.credentials != null)
+    Column(Modifier.testTag("library-fixed-header")) {
+        LibraryHeader(actions.search, { model.downloadsRequested = true }) { navigation.overlay = LibraryOverlay.Settings }
+        Spacer(Modifier.height(if (compact) 4.dp else 6.dp))
+        if (compact) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            Box(Modifier.weight(1f)) { LibraryIdentityCard(identity, true) { model.loginRequested = true } }
+            Box(Modifier.weight(1f)) { LibraryShortcuts(navigation.tab, true) { navigation.tab = it } }
+        } else {
+            LibraryIdentityCard(identity) { model.loginRequested = true }
+            Spacer(Modifier.height(4.dp))
+            LibraryShortcuts(navigation.tab) { navigation.tab = it }
         }
-        item(key = "library-shortcuts") { LibraryShortcuts(navigation.tab) { navigation.tab = it } }
-        item(key = "library-section-heading") { LibrarySectionHeader(navigation, model, tracks.size) }
-        if (navigation.tab == LibraryTab.Playlists) libraryPlaylistItems(model, navigation, actions, expanded, onExpand)
-        else librarySongItems(model, navigation, actions, tracks)
+        LibraryFixedControls(model, navigation, actions, tracks, compact)
+    }
+}
+
+// 标题与导入、播放全部等控制按钮固定展示，不随歌曲滚动消失。
+@Composable
+private fun LibraryFixedControls(model: MusicViewModel, navigation: LibraryNavigation, actions: LibraryActions,
+    tracks: List<Track>, compact: Boolean) {
+    val showActions = navigation.tab != LibraryTab.Favorites || tracks.isNotEmpty()
+    if (compact) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+        Box(Modifier.weight(1f)) { LibrarySectionHeader(navigation, model, tracks.size) }
+        if (showActions) Box(Modifier.weight(1f)) { LibrarySectionActions(navigation, model, actions, tracks, compact = true) }
+    } else {
+        LibrarySectionHeader(navigation, model, tracks.size)
+        if (showActions) LibrarySectionActions(navigation, model, actions, tracks)
     }
 }
 
@@ -164,7 +193,6 @@ private fun LazyListScope.librarySongItems(model: MusicViewModel, navigation: Li
         item(key = "library-favorites-empty") { LibraryOverviewEmpty(model, actions.discover) }
         return
     }
-    item { LibrarySectionActions(navigation, model, actions, tracks) }
     items(tracks, key = Track::id, contentType = { "library-song" }) { track ->
         LibrarySongRow(track, { actions.play(track, tracks) }, { navigation.showTrack(track) })
     }
@@ -174,7 +202,6 @@ private fun LazyListScope.librarySongItems(model: MusicViewModel, navigation: Li
 // 歌单列表和展开曲目共用一张惰性列表，长歌单分页不会一次创建数百行视图。
 private fun LazyListScope.libraryPlaylistItems(model: MusicViewModel, navigation: LibraryNavigation,
     actions: LibraryActions, expanded: ExpandedLibraryPlaylist?, onExpand: (CatalogEntry) -> Unit) {
-    item { LibrarySectionActions(navigation, model, actions, emptyList()) }
     if (model.account.credentials == null) {
         item { LibraryPlaylistSignIn(model) }
         return
@@ -325,7 +352,8 @@ private fun LibrarySectionHeader(navigation: LibraryNavigation, model: MusicView
 // 播放全部、导入与新建分别使用现有能力，不生成影子歌单或演示收藏。
 @Composable
 private fun LibrarySectionActions(navigation: LibraryNavigation, model: MusicViewModel,
-                                  actions: LibraryActions, tracks: List<Track>) {
+                                  actions: LibraryActions, tracks: List<Track>, compact: Boolean = false) {
+    if (compact && navigation.tab == LibraryTab.Local) { LibraryCompactLocalActions(model, actions, tracks); return }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         if (navigation.tab == LibraryTab.Local) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(actions.importAudio) { Text("导入本地音频") }
@@ -336,6 +364,16 @@ private fun LibrarySectionActions(navigation: LibraryNavigation, model: MusicVie
                 if (model.account.state.verified) navigation.overlay = LibraryOverlay.CreatePlaylist else model.loginRequested = true
             }) { Icon(Icons.Outlined.Add, null); Text("新建云歌单") }
         } else LibraryPlayAll(tracks, actions)
+    }
+}
+
+// 横屏本地操作压成一行，保留导入、管理和播放队列，同时不挤占列表高度。
+@Composable
+private fun LibraryCompactLocalActions(model: MusicViewModel, actions: LibraryActions, tracks: List<Track>) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        OutlinedButton(actions.importAudio, contentPadding = PaddingValues(horizontal = 12.dp)) { Text("导入") }
+        TextButton({ model.localLibraryRequested = true }, contentPadding = PaddingValues(horizontal = 8.dp)) { Text("管理") }
+        Box(Modifier.weight(1f)) { LibraryPlayAll(tracks, actions) }
     }
 }
 

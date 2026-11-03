@@ -52,25 +52,26 @@ internal data class LibraryIdentity(val title: String, val subtitle: String, val
 
 // 登录前后共用相同的黑胶账号卡，只替换真实资料和按钮文案。
 @Composable
-internal fun LibraryIdentityCard(identity: LibraryIdentity, onAccount: () -> Unit) {
+internal fun LibraryIdentityCard(identity: LibraryIdentity, compact: Boolean = false, onAccount: () -> Unit) {
     val surface = KimoColors.Surface
     val glow = lerp(surface, KimoColors.Orange, if (KimoColors.IsDark) 0.17f else 0.12f)
-    Box(Modifier.fillMaxWidth().heightIn(min = 160.dp).clip(RoundedCornerShape(24.dp))
+    Box(Modifier.fillMaxWidth().heightIn(min = if (compact) 80.dp else 132.dp).clip(RoundedCornerShape(22.dp))
         .background(Brush.horizontalGradient(listOf(surface, surface, glow))).testTag("library-identity-card")) {
-        LibraryHeroWaveform(Modifier.align(Alignment.CenterEnd).offset(x = (-126).dp, y = 12.dp).size(58.dp, 30.dp))
-        LibraryRecordIllustration(Modifier.align(Alignment.BottomEnd).offset(x = 32.dp, y = 25.dp).size(155.dp))
-        LibraryIdentityCaption(identity, onAccount, Modifier.fillMaxWidth(0.80f).padding(18.dp))
+        if (!compact) LibraryHeroWaveform(Modifier.align(Alignment.CenterEnd).offset(x = (-104).dp, y = 10.dp).size(48.dp, 24.dp))
+        LibraryRecordIllustration(Modifier.align(Alignment.BottomEnd).offset(x = 24.dp, y = 22.dp).size(if (compact) 90.dp else 128.dp))
+        LibraryIdentityCaption(identity, compact, onAccount, Modifier.fillMaxWidth(0.80f)
+            .padding(horizontal = if (compact) 12.dp else 16.dp, vertical = if (compact) 4.dp else 10.dp))
     }
 }
 
 // 卡片左侧保留稳定的标题、说明和操作层级，大字号时允许标题自然换行。
 @Composable
-private fun LibraryIdentityCaption(identity: LibraryIdentity, onAccount: () -> Unit, modifier: Modifier) {
-    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("让喜欢的音乐，有处安放", fontSize = 12.sp, lineHeight = 18.sp, color = KimoColors.Secondary)
-        Text(identity.title, fontSize = 21.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold,
+private fun LibraryIdentityCaption(identity: LibraryIdentity, compact: Boolean, onAccount: () -> Unit, modifier: Modifier) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(if (compact) 2.dp else 3.dp)) {
+        if (!compact) Text("让喜欢的音乐，有处安放", fontSize = 11.sp, lineHeight = 16.sp, color = KimoColors.Secondary)
+        Text(identity.title, fontSize = if (compact) 18.sp else 20.sp, lineHeight = if (compact) 22.sp else 26.sp, fontWeight = FontWeight.Bold,
             maxLines = 2, overflow = TextOverflow.Ellipsis, color = KimoColors.Ink)
-        Text(identity.subtitle, fontSize = 12.sp, lineHeight = 18.sp, color = KimoColors.Secondary,
+        if (!compact) Text(identity.subtitle, fontSize = 11.sp, lineHeight = 16.sp, color = KimoColors.Secondary,
             maxLines = 2, overflow = TextOverflow.Ellipsis)
         LibraryIdentityButton(identity, onAccount)
     }
@@ -94,15 +95,16 @@ private fun LibraryIdentityButton(identity: LibraryIdentity, onAccount: () -> Un
 
 // 四个栏目共用一排等宽入口，账号登录前后保持顺序和触控区域一致。
 @Composable
-internal fun LibraryShortcuts(selected: LibraryTab, onSelect: (LibraryTab) -> Unit) {
-    Row(Modifier.fillMaxWidth().selectableGroup().padding(vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        LibraryTab.entries.forEach { tab -> LibraryShortcut(tab, tab == selected, Modifier.weight(1f)) { onSelect(tab) } }
+internal fun LibraryShortcuts(selected: LibraryTab, compact: Boolean = false, onSelect: (LibraryTab) -> Unit) {
+    Row(Modifier.fillMaxWidth().selectableGroup().padding(vertical = if (compact) 2.dp else 4.dp).testTag("library-shortcuts"),
+        horizontalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 8.dp)) {
+        LibraryTab.entries.forEach { tab -> LibraryShortcut(tab, tab == selected, compact, Modifier.weight(1f)) { onSelect(tab) } }
     }
 }
 
 // 爱心、歌单、手机和时钟分别表达四个栏目，选中态同时提供颜色和读屏语义。
 @Composable
-private fun LibraryShortcut(tab: LibraryTab, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+private fun LibraryShortcut(tab: LibraryTab, selected: Boolean, compact: Boolean, modifier: Modifier, onClick: () -> Unit) {
     val tint = if (selected) KimoColors.Orange else KimoColors.Secondary
     val icon = when (tab) {
         LibraryTab.Favorites -> Icons.Filled.Favorite
@@ -111,11 +113,12 @@ private fun LibraryShortcut(tab: LibraryTab, selected: Boolean, modifier: Modifi
         LibraryTab.Recent -> Icons.Outlined.Schedule
     }
     Column(modifier.clip(RoundedCornerShape(15.dp)).selectable(selected, role = Role.Tab, onClick = onClick)
-        .semantics(mergeDescendants = true) { contentDescription = tab.shortcutTitle }.padding(vertical = 8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Box(Modifier.size(46.dp).background(if (selected) tint.copy(alpha = 0.13f) else KimoColors.Surface, CircleShape),
+        .semantics(mergeDescendants = true) { contentDescription = tab.shortcutTitle }.padding(vertical = if (compact) 4.dp else 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 8.dp)) {
+        Box(Modifier.size(if (compact) 32.dp else 44.dp).background(if (selected) tint.copy(alpha = 0.13f) else KimoColors.Surface, CircleShape),
             contentAlignment = Alignment.Center) { Icon(icon, null, Modifier.size(25.dp), tint = tint) }
-        Text(tab.shortcutTitle, fontSize = 13.sp, lineHeight = 19.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+        Text(tab.shortcutTitle, fontSize = if (compact) 11.sp else 13.sp, lineHeight = if (compact) 16.sp else 19.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
             color = if (selected) KimoColors.Ink else KimoColors.Secondary)
     }
 }
